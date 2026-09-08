@@ -1,0 +1,641 @@
+<title>ClickAI</title>
+<style>
+  :root {
+    --bg: #faf8f4;
+    --ink: #1c1f2e;
+    --ink-soft: #5b5f72;
+    --ink-faint: #8a8da0;
+    --accent: #3d4fd1;
+    --accent-soft: #eef0fb;
+    --amber: #c97a1f;
+    --amber-soft: #f7ead6;
+    --line: #e4e1d8;
+    --surface: #ffffff;
+    --shadow: rgba(28, 31, 46, 0.08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14151c;
+      --ink: #edeef3;
+      --ink-soft: #a5a8b8;
+      --ink-faint: #6d7086;
+      --accent: #7784e6;
+      --accent-soft: #232748;
+      --amber: #e8a33d;
+      --amber-soft: #3a2c15;
+      --line: #2a2c3a;
+      --surface: #1b1d29;
+      --shadow: rgba(0, 0, 0, 0.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14151c;
+    --ink: #edeef3;
+    --ink-soft: #a5a8b8;
+    --ink-faint: #6d7086;
+    --accent: #7784e6;
+    --accent-soft: #232748;
+    --amber: #e8a33d;
+    --amber-soft: #3a2c15;
+    --line: #2a2c3a;
+    --surface: #1b1d29;
+    --shadow: rgba(0, 0, 0, 0.35);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Source Serif 4", Georgia, "Times New Roman", serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1, h2, h3, .display {
+    font-family: "Manrope", -apple-system, "Segoe UI", sans-serif;
+    text-wrap: balance;
+    margin: 0;
+  }
+  .mono {
+    font-family: "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  .deck {
+    position: relative;
+    width: 100%;
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: clamp(16px, 3vw, 32px);
+  }
+
+  .slide {
+    display: none;
+    min-height: min(78vh, 720px);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 20px;
+    box-shadow: 0 20px 60px -30px var(--shadow);
+    padding: clamp(28px, 5vw, 64px);
+    animation: rise 0.4s ease;
+  }
+  .slide.active { display: flex; flex-direction: column; }
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .slide { animation: none; }
+  }
+
+  .eyebrow {
+    font-family: "Fira Code", ui-monospace, monospace;
+    font-size: 12.5px;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .eyebrow::before {
+    content: "";
+    width: 18px;
+    height: 1.5px;
+    background: var(--accent);
+    display: inline-block;
+  }
+  .eyebrow-amber { color: var(--amber); }
+  .eyebrow-amber::before { background: var(--amber); }
+
+  /* ---- Slide 1 : Hero ---- */
+  #slide-1 { justify-content: center; gap: clamp(24px, 4vw, 40px); }
+  .hero-grid {
+    display: grid;
+    grid-template-columns: 1.1fr 1fr;
+    gap: clamp(28px, 5vw, 56px);
+    align-items: center;
+  }
+  @media (max-width: 760px) { .hero-grid { grid-template-columns: 1fr; } }
+  .hero-title {
+    font-size: clamp(40px, 6vw, 62px);
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    line-height: 1.03;
+    color: var(--ink);
+  }
+  .hero-title span { color: var(--accent); }
+  .hero-sub {
+    margin-top: 18px;
+    font-size: 19px;
+    line-height: 1.55;
+    color: var(--ink-soft);
+    max-width: 46ch;
+  }
+  .hero-tags {
+    margin-top: 22px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .tag {
+    font-family: "Fira Code", monospace;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 5px 10px;
+    border-radius: 7px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    letter-spacing: 0.02em;
+  }
+  .tag.pdf { background: #fbe9e7; color: #b3462c; }
+  .tag.docx { background: #e6effb; color: #2860b0; }
+  .tag.xlsx { background: #e6f5ea; color: #1f8a4c; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .tag.pdf { background: #3a241f; color: #e8a08c; }
+    :root:not([data-theme="light"]) .tag.docx { background: #1f2c3f; color: #8fb6ea; }
+    :root:not([data-theme="light"]) .tag.xlsx { background: #1c3324; color: #7dcf9c; }
+  }
+  :root[data-theme="dark"] .tag.pdf { background: #3a241f; color: #e8a08c; }
+  :root[data-theme="dark"] .tag.docx { background: #1f2c3f; color: #8fb6ea; }
+  :root[data-theme="dark"] .tag.xlsx { background: #1c3324; color: #7dcf9c; }
+
+  /* mock answer card */
+  .mock-card {
+    background: var(--accent-soft);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 20px 22px;
+    font-family: "Manrope", sans-serif;
+  }
+  .mock-q {
+    font-size: 13px;
+    color: var(--ink-faint);
+    margin-bottom: 6px;
+    font-weight: 600;
+  }
+  .mock-question {
+    font-size: 15.5px;
+    color: var(--ink);
+    font-weight: 700;
+    margin-bottom: 14px;
+  }
+  .mock-answer {
+    font-family: "Source Serif 4", serif;
+    font-size: 15px;
+    line-height: 1.6;
+    color: var(--ink);
+    background: var(--surface);
+    border-radius: 10px;
+    padding: 14px 16px;
+    border: 1px solid var(--line);
+  }
+  .cite {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 17px;
+    height: 17px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #fff;
+    font-family: "Fira Code", monospace;
+    font-size: 10px;
+    font-weight: 700;
+    margin: 0 1px;
+    transform: translateY(-4px);
+  }
+  .mock-foot {
+    margin-top: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .confidence {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12.5px;
+    color: var(--ink-soft);
+  }
+  .confidence-bar {
+    width: 62px;
+    height: 5px;
+    border-radius: 3px;
+    background: var(--line);
+    overflow: hidden;
+  }
+  .confidence-fill {
+    height: 100%;
+    width: 92%;
+    background: linear-gradient(90deg, var(--accent), #7a86e8);
+    border-radius: 3px;
+  }
+  .mock-src {
+    font-family: "Fira Code", monospace;
+    font-size: 11px;
+    color: var(--ink-faint);
+  }
+
+  /* ---- generic body slide ---- */
+  .slide-head { margin-bottom: clamp(20px, 3vw, 30px); }
+  .slide-head h2 {
+    font-size: clamp(28px, 4vw, 38px);
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    margin-top: 10px;
+  }
+  .slide-head p.lede {
+    margin-top: 12px;
+    font-size: 16.5px;
+    color: var(--ink-soft);
+    max-width: 62ch;
+    line-height: 1.6;
+  }
+  .slide-body { flex: 1; display: flex; flex-direction: column; justify-content: center; }
+
+  /* Slide 2: pain points */
+  .point-row {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 18px;
+  }
+  @media (max-width: 760px) { .point-row { grid-template-columns: 1fr; } }
+  .point {
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 22px 20px;
+    background: var(--bg);
+  }
+  .point .num {
+    font-family: "Fira Code", monospace;
+    font-size: 12px;
+    color: var(--amber);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+  .point h3 {
+    font-size: 17.5px;
+    margin-top: 10px;
+    font-weight: 700;
+  }
+  .point-amber { background: var(--amber-soft); border-color: transparent; }
+  .point p {
+    font-size: 14.5px;
+    color: var(--ink-soft);
+    line-height: 1.55;
+    margin-top: 8px;
+  }
+
+  /* Slide 3: how it works — step flow */
+  .steps {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr auto 1fr;
+    align-items: center;
+    gap: 6px;
+  }
+  @media (max-width: 760px) {
+    .steps { grid-template-columns: 1fr; }
+    .arrow { display: none; }
+  }
+  .step {
+    text-align: center;
+    padding: 26px 16px;
+  }
+  .step-icon {
+    width: 52px;
+    height: 52px;
+    border-radius: 14px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 16px;
+    font-family: "Manrope", sans-serif;
+    font-weight: 800;
+    font-size: 20px;
+  }
+  .step h3 { font-size: 16px; font-weight: 700; }
+  .step p { font-size: 13.5px; color: var(--ink-soft); margin-top: 8px; line-height: 1.5; }
+  .arrow { color: var(--ink-faint); font-size: 22px; }
+
+  /* Slide 4: features grid */
+  .feature-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 14px;
+  }
+  @media (max-width: 760px) { .feature-grid { grid-template-columns: 1fr; } }
+  .feature {
+    display: flex;
+    gap: 14px;
+    padding: 16px 18px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+  }
+  .feature .dot {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    margin-top: 8px;
+  }
+  .feature h3 { font-size: 15.5px; font-weight: 700; }
+  .feature p { font-size: 13.5px; color: var(--ink-soft); margin-top: 4px; line-height: 1.5; }
+
+  /* Slide 5: close */
+  #slide-5 { justify-content: center; }
+  .close-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 40px;
+    align-items: center;
+  }
+  @media (max-width: 760px) { .close-grid { grid-template-columns: 1fr; } }
+  .avail-row { display: flex; gap: 10px; margin-top: 20px; flex-wrap: wrap; }
+  .pill {
+    font-family: "Fira Code", monospace;
+    font-size: 12.5px;
+    font-weight: 600;
+    padding: 7px 13px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    color: var(--ink-soft);
+  }
+  .next-list { display: flex; flex-direction: column; gap: 12px; }
+  .next-list li { list-style: none; font-size: 14.5px; color: var(--ink-soft); display: flex; gap: 10px; }
+  .next-list li::before { content: "→"; color: var(--amber); font-weight: 700; }
+  .cta-box {
+    background: var(--accent-soft);
+    border-radius: 16px;
+    padding: 26px 26px;
+  }
+  .cta-box h3 { font-size: 19px; font-weight: 800; color: var(--ink); }
+  .cta-box p { font-size: 14.5px; color: var(--ink-soft); margin-top: 8px; line-height: 1.55; }
+
+  /* ---- nav ---- */
+  .nav {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 18px;
+    margin-top: 20px;
+  }
+  .nav button {
+    font-family: "Manrope", sans-serif;
+    font-weight: 700;
+    font-size: 13.5px;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--ink);
+    padding: 9px 18px;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: background 0.15s ease, transform 0.15s ease;
+  }
+  .nav button:hover { background: var(--accent-soft); color: var(--accent); }
+  .nav button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .nav button:disabled { opacity: 0.35; cursor: default; }
+  .nav button:disabled:hover { background: var(--surface); color: var(--ink); }
+  .dots { display: flex; gap: 7px; }
+  .dot-btn {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--line);
+    border: none;
+    padding: 0;
+    cursor: pointer;
+  }
+  .dot-btn.active { background: var(--accent); width: 22px; border-radius: 4px; }
+  .counter {
+    font-family: "Fira Code", monospace;
+    font-size: 12.5px;
+    color: var(--ink-faint);
+    min-width: 40px;
+    text-align: center;
+  }
+</style>
+
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=Fira+Code:wght@500;600;700&display=swap">
+
+<div class="deck">
+
+  <section class="slide active" id="slide-1">
+    <div class="hero-grid">
+      <div>
+        <div class="eyebrow">Internal project</div>
+        <h1 class="hero-title">Click<span>AI</span></h1>
+        <p class="hero-sub">Ask your documents anything — and get an answer you can actually verify, in seconds.</p>
+        <div class="hero-tags">
+          <span class="tag pdf">PDF</span>
+          <span class="tag docx">DOCX</span>
+          <span class="tag xlsx">XLSX</span>
+          <span class="tag">+ more</span>
+        </div>
+      </div>
+      <div class="mock-card">
+        <div class="mock-q">You asked</div>
+        <div class="mock-question">What companies have I worked for?</div>
+        <div class="mock-answer">
+          You've worked as a Senior SRE at Amazon Web Services<span class="cite">1</span> and previously as a DevOps Engineer at Google Cloud<span class="cite">2</span>.
+        </div>
+        <div class="mock-foot">
+          <div class="confidence">
+            <span>Confidence</span>
+            <span class="confidence-bar"><span class="confidence-fill"></span></span>
+          </div>
+          <span class="mock-src">resume.pdf · p.1</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="slide" id="slide-2">
+    <div class="slide-head">
+      <div class="eyebrow">The problem</div>
+      <h2>Finding one fact shouldn't take fifteen minutes.</h2>
+      <p class="lede">Long contracts, reports, spreadsheets, resumes — the answer is usually in there somewhere. Getting to it means skimming, Ctrl+F guesses, and hoping you didn't miss the right page.</p>
+    </div>
+    <div class="slide-body">
+      <div class="point-row">
+        <div class="point">
+          <div class="num">01</div>
+          <h3>Slow to search</h3>
+          <p>Keyword search only finds exact words — not the answer phrased a different way.</p>
+        </div>
+        <div class="point">
+          <div class="num">02</div>
+          <h3>Easy to miss things</h3>
+          <p>A detail buried on page 40 of a report rarely gets read at all.</p>
+        </div>
+        <div class="point">
+          <div class="num">03</div>
+          <h3>Hard to trust a summary</h3>
+          <p>A quick answer is only useful if you can check exactly where it came from.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="slide" id="slide-3">
+    <div class="slide-head">
+      <div class="eyebrow">How it works</div>
+      <h2>Upload, ask, verify — that's it.</h2>
+      <p class="lede">No setup, no training a model on your files. ClickAI reads the document once, then answers plain-English questions grounded entirely in what's actually in it.</p>
+    </div>
+    <div class="slide-body">
+      <div class="steps">
+        <div class="step">
+          <div class="step-icon">1</div>
+          <h3>Upload a document</h3>
+          <p>Drop in a PDF, Word file, spreadsheet, or webpage — desktop or browser.</p>
+        </div>
+        <div class="arrow">→</div>
+        <div class="step">
+          <div class="step-icon">2</div>
+          <h3>Ask in plain English</h3>
+          <p>"What's the termination clause?" "List the Q3 numbers." No special syntax.</p>
+        </div>
+        <div class="arrow">→</div>
+        <div class="step">
+          <div class="step-icon">3</div>
+          <h3>Get a cited answer</h3>
+          <p>Every answer links back to the exact page or section it came from.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="slide" id="slide-4">
+    <div class="slide-head">
+      <div class="eyebrow eyebrow-amber">Data handling</div>
+      <h2>Your files never stick around.</h2>
+      <p class="lede">Built to be safe with sensitive material by default — nothing is kept longer than it takes to answer your question.</p>
+    </div>
+    <div class="slide-body">
+      <div class="point-row">
+        <div class="point point-amber">
+          <div class="num num-amber">No database</div>
+          <h3>Never written to permanent storage</h3>
+          <p>Documents are processed in memory and a temporary session folder only — nothing lands in a persistent database.</p>
+        </div>
+        <div class="point point-amber">
+          <div class="num num-amber">Auto-wiped</div>
+          <h3>Cleared the moment your session ends</h3>
+          <p>Close the tab, refresh the page, or quit the app — everything you uploaded is deleted immediately.</p>
+        </div>
+        <div class="point point-amber">
+          <div class="num num-amber">On demand</div>
+          <h3>Or clear it yourself, any time</h3>
+          <p>One click removes every uploaded document and its conversation, whenever you want — no waiting on a session to end.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="slide" id="slide-5">
+    <div class="slide-head">
+      <div class="eyebrow">What it does well</div>
+      <h2>Built to be trustworthy, not just fast.</h2>
+    </div>
+    <div class="slide-body">
+      <div class="feature-grid">
+        <div class="feature">
+          <span class="dot"></span>
+          <div><h3>Never guesses</h3><p>If the document doesn't cover it, ClickAI says so — instead of making something up.</p></div>
+        </div>
+        <div class="feature">
+          <span class="dot"></span>
+          <div><h3>Verifiable citations</h3><p>Every claim links to the real excerpt and page it came from, not just a number.</p></div>
+        </div>
+        <div class="feature">
+          <span class="dot"></span>
+          <div><h3>Confidence you can see</h3><p>Each answer shows how confident the model actually is — no false certainty.</p></div>
+        </div>
+        <div class="feature">
+          <span class="dot"></span>
+          <div><h3>One document, one conversation</h3><p>Upload several files and keep a separate, focused thread per document.</p></div>
+        </div>
+        <div class="feature">
+          <span class="dot"></span>
+          <div><h3>Reads tables properly</h3><p>Spreadsheet and HTML tables keep their headers, so numbers stay meaningful.</p></div>
+        </div>
+        <div class="feature">
+          <span class="dot"></span>
+          <div><h3>Desktop or browser</h3><p>A native Mac app for quick lookups, or a web version for anywhere else.</p></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="slide" id="slide-6">
+    <div class="close-grid">
+      <div>
+        <div class="eyebrow">Where it's headed</div>
+        <h2 style="font-size: clamp(26px, 3.6vw, 34px); font-weight: 800; margin-top: 10px;">Already useful today — and still growing.</h2>
+        <div class="avail-row">
+          <span class="pill">● Desktop app</span>
+          <span class="pill">● Web app</span>
+        </div>
+        <ul class="next-list" style="margin-top: 24px; padding: 0;">
+          <li>Removing a single document without clearing everything</li>
+          <li>Packaged, signed installers for easy sharing</li>
+          <li>Support for scanned / image-based PDFs</li>
+        </ul>
+      </div>
+      <div class="cta-box">
+        <h3>Try it on something real</h3>
+        <p>Bring a contract, a spreadsheet, or your own resume — ask it a question you'd normally have to dig for the answer to.</p>
+      </div>
+    </div>
+  </section>
+
+  <div class="nav">
+    <button id="prevBtn" aria-label="Previous slide">← Prev</button>
+    <div class="dots" id="dots"></div>
+    <span class="counter" id="counter">1 / 5</span>
+    <button id="nextBtn" aria-label="Next slide">Next →</button>
+  </div>
+</div>
+
+<script>
+  (function () {
+    var slides = Array.prototype.slice.call(document.querySelectorAll(".slide"));
+    var dotsWrap = document.getElementById("dots");
+    var counter = document.getElementById("counter");
+    var prevBtn = document.getElementById("prevBtn");
+    var nextBtn = document.getElementById("nextBtn");
+    var current = 0;
+
+    slides.forEach(function (_, i) {
+      var b = document.createElement("button");
+      b.className = "dot-btn" + (i === 0 ? " active" : "");
+      b.setAttribute("aria-label", "Go to slide " + (i + 1));
+      b.addEventListener("click", function () { go(i); });
+      dotsWrap.appendChild(b);
+    });
+    var dotEls = Array.prototype.slice.call(dotsWrap.children);
+
+    function go(i) {
+      if (i < 0 || i >= slides.length) return;
+      slides[current].classList.remove("active");
+      dotEls[current].classList.remove("active");
+      current = i;
+      slides[current].classList.add("active");
+      dotEls[current].classList.add("active");
+      counter.textContent = (current + 1) + " / " + slides.length;
+      prevBtn.disabled = current === 0;
+      nextBtn.disabled = current === slides.length - 1;
+    }
+
+    prevBtn.addEventListener("click", function () { go(current - 1); });
+    nextBtn.addEventListener("click", function () { go(current + 1); });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "ArrowRight") go(current + 1);
+      if (e.key === "ArrowLeft") go(current - 1);
+    });
+    go(0);
+  })();
+</script>

@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ClickAI — Sign in</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --bg:#fdfdfc; --surface:#ffffff; --panel:#f7f7f5;
+    --text:#17171a; --text-soft:#68676d; --text-faint:#9c9ba1;
+    --line:#e9e8e4; --accent:#3d4fd1; --accent-soft:#eceefa;
+    --conf-low:#b23b3b; --conf-low-bg:#fbebeb;
+  }
+  *{ box-sizing:border-box; }
+  html, body{
+    margin:0; padding:0; height:100%;
+    background:var(--bg);
+    font-family:"Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color:var(--text);
+  }
+  body{ display:flex; align-items:center; justify-content:center; }
+  #card{
+    width:100%; max-width:340px; margin:24px;
+    background:var(--surface); border:1px solid var(--line); border-radius:14px;
+    padding:32px 28px; box-shadow:0 1px 3px rgba(0,0,0,0.04);
+  }
+  #brand{ display:flex; align-items:center; gap:11px; margin-bottom:22px; }
+  #brand-mark{
+    width:32px; height:32px; border-radius:9px; flex-shrink:0;
+    background:var(--accent); color:#fff; font-weight:800; font-size:16px;
+    display:flex; align-items:center; justify-content:center;
+  }
+  #brand-title{ font-weight:700; font-size:16px; }
+  h1{ font-size:15px; font-weight:700; margin:0 0 4px; }
+  #subtitle{ font-size:12.5px; color:var(--text-soft); margin:0 0 20px; line-height:1.5; }
+  form{ display:flex; flex-direction:column; gap:14px; }
+  label{ font-size:12px; font-weight:600; color:var(--text-soft); display:flex; flex-direction:column; gap:6px; }
+  input{
+    font-family:inherit; font-size:14px; padding:10px 12px;
+    border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--text);
+  }
+  input:focus{ outline:2px solid var(--accent-soft); border-color:var(--accent); }
+  button{
+    margin-top:4px; font-family:inherit; font-weight:700; font-size:13.5px;
+    background:var(--accent); color:#fff; border:none; border-radius:8px;
+    padding:11px; cursor:pointer;
+  }
+  button:disabled{ opacity:0.6; cursor:default; }
+  #error{
+    display:none; font-size:12.5px; color:var(--conf-low); background:var(--conf-low-bg);
+    border-radius:7px; padding:8px 10px; margin-top:2px;
+  }
+  #error.visible{ display:block; }
+  #note{ margin-top:18px; font-size:11px; color:var(--text-faint); line-height:1.5; }
+</style>
+</head>
+<body>
+  <div id="card">
+    <div id="brand">
+      <div id="brand-mark">C</div>
+      <div id="brand-title">ClickAI</div>
+    </div>
+    <h1>Sign in</h1>
+    <p id="subtitle">Your uploaded documents stay tied to this session — they're cleared when you log out.</p>
+    <form id="login-form">
+      <label>Username
+        <input id="username" type="text" autocomplete="username" autofocus />
+      </label>
+      <label>Password
+        <input id="password" type="password" autocomplete="current-password" />
+      </label>
+      <div id="error"></div>
+      <button id="submit-btn" type="submit">Sign in</button>
+    </form>
+    <p id="note">Temporary login while ClickAI Web has no account system yet.</p>
+  </div>
+  <script>
+    const form = document.getElementById("login-form");
+    const errorBox = document.getElementById("error");
+    const submitBtn = document.getElementById("submit-btn");
+
+    function showError(message) {
+      errorBox.textContent = message;
+      errorBox.classList.add("visible");
+    }
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      errorBox.classList.remove("visible");
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Signing in…";
+      try {
+        const res = await fetch("/api/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username: document.getElementById("username").value,
+            password: document.getElementById("password").value,
+          }),
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          showError(body.error || "Sign in failed.");
+          return;
+        }
+        window.location.href = "/";
+      } catch {
+        showError("Couldn't reach the server. Try again.");
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Sign in";
+      }
+    });
+  </script>
+</body>
+</html>

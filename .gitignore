@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+*.log
+config.json
+release/
+.DS_Store
+node_modules*/
+_debug_log_summary.txt

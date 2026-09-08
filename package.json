@@ -1,0 +1,70 @@
+{
+  "name": "clickai",
+  "version": "0.1.0",
+  "description": "ClickAI - a screen-aware AI assistant overlay for your desktop",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && mkdir -p dist/renderer && cp src/renderer/index.html src/renderer/style.css src/renderer/renderer.js dist/renderer/",
+    "dev": "npm run build && electron .",
+    "start": "electron .",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:mac:dir": "npm run build && electron-builder --mac --dir",
+    "web": "tsc -p tsconfig.json && node dist/server/server.js"
+  },
+  "author": "Manmeet Singh",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/multer": "^2.2.0",
+    "@types/node": "^22.5.0",
+    "electron": "^44.0.0",
+    "electron-builder": "^26.15.3",
+    "typescript": "^5.5.4"
+  },
+  "dependencies": {
+    "electron-store": "^8.2.0",
+    "exceljs": "^3.4.0",
+    "express": "^5.2.1",
+    "html-to-text": "^10.0.1",
+    "jszip": "^3.10.1",
+    "mammoth": "^1.12.2",
+    "multer": "^2.3.0",
+    "node-html-parser": "^9.0.2",
+    "openai": "^4.60.0",
+    "pdfjs-dist": "^6.3.289"
+  },
+  "build": {
+    "appId": "com.clickai.app",
+    "productName": "ClickAI",
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "assets",
+        "to": "assets"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false
+    },
+    "dmg": {
+      "title": "${productName} ${version}"
+    },
+    "directories": {
+      "output": "../ClickAI-release"
+    }
+  }
+}

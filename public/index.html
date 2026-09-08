@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ClickAI</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=Fira+Code:wght@500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+    <div id="titlebar">
+      <div id="titlebar-brand">
+        <div id="brand-mark">C</div>
+        <div id="brand-text">
+          <span id="title">ClickAI</span>
+          <span id="doc-count-label">0 documents</span>
+        </div>
+      </div>
+      <div id="titlebar-actions">
+        <button id="export-btn" title="Export this conversation">Export</button>
+        <button id="evals-btn" title="Evals & flagged answers">📊 Evals</button>
+        <button id="settings-btn" title="Settings">⚙ Settings</button>
+        <button id="logout-btn" title="Log out — clears your uploaded documents">Log out</button>
+      </div>
+    </div>
+
+    <!-- Docs: strict document Q&A, three-column evidence-panel layout
+         (2026-09-02, revised same day: documents moved to a persistent
+         left sidebar per explicit user request, instead of being tucked
+         behind a "Manage docs" toggle). Answers ONLY from what's in your
+         uploaded documents. Citation markers in the answer are
+         color-linked to matching cards in the Evidence column on the
+         right. Uploaded documents are cleared automatically when this
+         tab is refreshed or closed (2026-09-02, explicit user request) —
+         see the beforeunload handler in app.js. -->
+    <div id="docs-tab">
+      <aside id="docs-col">
+        <div id="docs-col-head">
+          <span id="docs-col-title">Documents</span>
+          <button id="docs-upload-btn">+ Add</button>
+        </div>
+        <input id="docs-file-input" type="file" multiple hidden
+               accept=".pdf,.docx,.xlsx,.xlsm,.pptx,.pptm,.html,.htm,.png,.jpg,.jpeg,.gif,.webp,.bmp,.mp3,.mp4,.mpeg,.mpga,.m4a,.wav,.webm,.txt,.md,.csv,.json,.log" />
+        <div id="docs-list"></div>
+        <div id="docs-status"><span id="docs-status-text"></span><span id="docs-status-eta"></span><span id="docs-status-elapsed"></span></div>
+        <button id="docs-clear-btn">Clear all documents</button>
+      </aside>
+
+      <div id="thread-col">
+        <div id="docs-log"></div>
+        <div id="docs-input-row">
+          <textarea id="docs-prompt-input" rows="2" placeholder="Ask a question about your uploaded documents…"></textarea>
+          <button id="docs-send-btn">Ask</button>
+        </div>
+      </div>
+
+      <aside id="evidence-col">
+        <div id="evidence-head">
+          <span id="evidence-title">Evidence</span>
+        </div>
+        <div id="evidence-list"></div>
+      </aside>
+    </div>
+
+    <div id="settings-panel" class="hidden">
+      <h3>Settings</h3>
+      <label>OpenAI API Key
+        <input id="api-key-input" type="password" placeholder="sk-..." />
+      </label>
+      <label>Model
+        <select id="model-input">
+          <option value="gpt-5.4">gpt-5.4 (smartest, recommended)</option>
+          <option value="gpt-5.4-mini">gpt-5.4-mini (faster/cheaper)</option>
+          <option value="gpt-4o">gpt-4o (legacy)</option>
+          <option value="gpt-4o-mini">gpt-4o-mini (legacy)</option>
+        </select>
+      </label>
+      <label>Chunking strategy
+        <select id="chunking-strategy-input"></select>
+        <p id="chunking-strategy-hint" class="setting-hint"></p>
+      </label>
+      <label>Chunk size (max characters)
+        <input id="chunk-max-chars-input" type="number" min="200" step="100" />
+      </label>
+      <label>Chunk overlap (characters)
+        <input id="chunk-overlap-chars-input" type="number" min="0" step="10" />
+      </label>
+      <label>Embedding model
+        <select id="embedding-model-input"></select>
+        <p id="embedding-model-hint" class="setting-hint"></p>
+      </label>
+      <label class="checkbox-label">
+        <input id="reranking-enabled-input" type="checkbox" />
+        Rerank results (improves relevance, costs one extra call per question)
+      </label>
+      <div class="settings-actions">
+        <button id="save-settings-btn">Save</button>
+        <button id="cancel-settings-btn">Cancel</button>
+      </div>
+    </div>
+
+    <div id="evals-panel" class="hidden">
+      <h3>Evals</h3>
+      <p class="setting-hint">Each case runs a real question through your documents and checks the answer contains the expected keywords. This uses real API calls, same as asking normally.</p>
+      <label>Eval cases (JSON array)
+        <textarea id="evals-input" rows="6" placeholder='[{"question":"What is the refund window?","expectedKeywords":["30 days"]}]'></textarea>
+      </label>
+      <div class="settings-actions">
+        <button id="run-evals-btn">Run evals</button>
+        <button id="close-evals-btn">Close</button>
+      </div>
+      <div id="evals-error" class="msg-error"></div>
+      <div id="evals-results"></div>
+      <h4>Recent runs</h4>
+      <div id="evals-history"></div>
+      <h4>Flagged answers</h4>
+      <div id="flags-history"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
