@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { randomUUID } from "crypto";
+import { randomUUID, createHash } from "crypto";
 import OpenAI from "openai";
 import { store } from "./store";
 import { extractText, isSupportedDocument } from "./docParsers";
@@ -91,6 +91,16 @@ interface SessionState {
   tempDir: string | null;
   chunks: Chunk[];
   docs: DocSummary[];
+  /** docId -> a cache key combining the uploaded file's content hash with
+   * every processing setting that affects the RESULT (chunking strategy,
+   * chunk size/overlap, embedding model) (2026-09-11, duplicate-document
+   * detection — spec: "one of the most important cost-control
+   * mechanisms"). Session-scoped, not persisted, matching ClickAI's
+   * ephemeral-by-design storage (see clearAll) -- this only ever saves
+   * redundant OCR/parsing/chunking/embedding work WITHIN one still-active
+   * session (e.g. the same file uploaded twice, or re-uploaded after
+   * being removed), never across sessions or after logout. */
+  docCacheKeys: Map<string, string>;
 }
 
 const sessions = new Map<string, SessionState>();
@@ -98,7 +108,7 @@ const sessions = new Map<string, SessionState>();
 function getSessionState(sessionId: string): SessionState {
   let s = sessions.get(sessionId);
   if (!s) {
-    s = { tempDir: null, chunks: [], docs: [] };
+    s = { tempDir: null, chunks: [], docs: [], docCacheKeys: new Map() };
     sessions.set(sessionId, s);
   }
   return s;
@@ -304,6 +314,47 @@ export async function addDocument(
       onProgress?.(`${originalName} is ${mb}MB — this may take a little while to read and embed…`);
     }
 
+    // Settings that affect the PROCESSED RESULT, read up front (2026-09-11)
+    // so they can be folded into the duplicate-detection cache key below,
+    // not just used later at chunk/embed time.
+    const configuredStrategy: ChunkingStrategy = store.get("chunkingStrategy") || DEFAULT_CHUNKING_STRATEGY;
+    // Chunk size (2026-09-08, user-adjustable) — falls back to the tuned
+    // defaults (see chunkText's own signature) only if the store somehow
+    // has no value, which shouldn't happen once defaults are written, but
+    // keeps this call site safe either way.
+    const maxChars = store.get("chunkMaxChars") || undefined;
+    const overlapChars = store.get("chunkOverlapChars");
+    const embeddingModel = store.get("embeddingModel") || DEFAULT_EMBEDDING_MODEL;
+
+    // Duplicate-document detection (2026-09-11) — "one of the most
+    // important cost-control mechanisms" for a RAG upload pipeline: if
+    // this exact file content was already fully processed earlier in
+    // THIS session (re-uploaded by mistake, or re-added after removal),
+    // skip extraction/OCR, chunking, and embedding entirely and just
+    // clone the existing chunks under the new document's id/name. The
+    // cache key combines the file's content hash with every setting that
+    // changes the RESULT (chunking strategy/size/overlap, embedding
+    // model) — matching the file alone isn't enough, since the user may
+    // have changed those settings since the first upload, which really
+    // would need reprocessing. Session-scoped only, matching ClickAI's
+    // deliberately ephemeral storage (see clearAll/teardown) — this never
+    // persists across a logout or a different session.
+    const contentHash = createHash("sha256").update(fs.readFileSync(copyPath)).digest("hex");
+    const cacheKey = `${contentHash}:${configuredStrategy}:${maxChars ?? "default"}:${overlapChars ?? "default"}:${embeddingModel}`;
+    const session = getSessionState(sessionId);
+    const duplicateOfDocId = session.docs.find((d) => session.docCacheKeys.get(d.id) === cacheKey)?.id;
+    if (duplicateOfDocId) {
+      onProgress?.(`${originalName} matches content already processed in this session — reusing it, no re-reading, chunking, or embedding needed…`);
+      const sourceChunks = session.chunks.filter((c) => c.docId === duplicateOfDocId);
+      sourceChunks.forEach((c, i) => {
+        session.chunks.push({ ...c, id: `${docId}-${i}`, docId, docName: originalName });
+      });
+      const summary: DocSummary = { id: docId, name: originalName, chunkCount: sourceChunks.length };
+      session.docs.push(summary);
+      session.docCacheKeys.set(docId, cacheKey);
+      return summary;
+    }
+
     onProgress?.(`Reading ${originalName}…`);
     const text = await extractText(copyPath);
     if (!text || !text.trim()) {
@@ -316,14 +367,6 @@ export async function addDocument(
     // happens at all.
     const client = new OpenAI({ apiKey, timeout: DEFAULT_CLIENT_TIMEOUT_MS });
     const model = store.get("model") || "gpt-5.4";
-    const configuredStrategy: ChunkingStrategy = store.get("chunkingStrategy") || DEFAULT_CHUNKING_STRATEGY;
-    // Chunk size (2026-09-08, user-adjustable) — falls back to the tuned
-    // defaults (see chunkText's own signature) only if the store somehow
-    // has no value, which shouldn't happen once defaults are written, but
-    // keeps this call site safe either way.
-    const maxChars = store.get("chunkMaxChars") || undefined;
-    const overlapChars = store.get("chunkOverlapChars");
-    const embeddingModel = store.get("embeddingModel") || DEFAULT_EMBEDDING_MODEL;
 
     // "Auto" (2026-09-08, explicit user request) is resolved to one of
     // the 5 concrete strategies HERE, once per document, before any
@@ -370,7 +413,6 @@ export async function addDocument(
     onProgress?.(`Embedding ${pieces.length} chunk${pieces.length === 1 ? "" : "s"} from ${originalName}…`);
     const vectors = await embedTexts(client, pieces.map((p) => p.text), embeddingModel);
 
-    const session = getSessionState(sessionId);
     pieces.forEach((piece, i) => {
       session.chunks.push({ id: `${docId}-${i}`, docId, docName: originalName, text: piece.text, embedding: vectors[i], embeddingModel, page: piece.page, chunkingStrategy: strategy });
     });
@@ -398,6 +440,7 @@ export async function addDocument(
 
     const summary: DocSummary = { id: docId, name: originalName, chunkCount: pieces.length };
     session.docs.push(summary);
+    session.docCacheKeys.set(docId, cacheKey);
     return summary;
   } catch (err: any) {
     logError({ stage: "upload", message: err.message || String(err), docName: originalName });

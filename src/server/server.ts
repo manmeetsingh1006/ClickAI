@@ -114,7 +114,20 @@ function requireAuth(req: express.Request, res: express.Response, next: express.
   next();
 }
 
-const upload = multer({ dest: path.join(os.tmpdir(), "clickai-web-uploads") });
+// Upload hardening (2026-09-11): the multi-modal RAG spec's cost/security
+// controls explicitly call out per-file size and per-request file-count
+// caps as baseline protection against a careless or malicious upload
+// (e.g. someone uploading a multi-GB file) -- upload.array's "20" arg
+// already caps file COUNT per request, but there was no cap on individual
+// file SIZE at all before this, so multer would happily buffer an
+// arbitrarily large file to disk. 100MB comfortably covers real documents
+// (the in-app "large file" warning starts at 20MB) while still bounding
+// worst-case disk/memory use per upload.
+const MAX_UPLOAD_FILE_BYTES = 100 * 1024 * 1024;
+const upload = multer({
+  dest: path.join(os.tmpdir(), "clickai-web-uploads"),
+  limits: { fileSize: MAX_UPLOAD_FILE_BYTES },
+});
 
 // ---- Auth ----
 app.post("/api/login", (req, res) => {
@@ -278,7 +291,30 @@ app.post("/api/docs/clear", requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-app.post("/api/docs/upload", requireAuth, upload.array("files", 20), async (req, res) => {
+// multer's file-size/count limit errors (MulterError) throw BEFORE the
+// route handler runs, so they'd otherwise fall through to Express's
+// default HTML error page -- this wraps upload.array(...) so a
+// too-large file or too-many-files request gets the same clean JSON
+// error shape as every other failure mode in this route (2026-09-11).
+function handleUpload(req: express.Request, res: express.Response, next: express.NextFunction) {
+  upload.array("files", 20)(req, res, (err: any) => {
+    if (!err) {
+      next();
+      return;
+    }
+    if (err.code === "LIMIT_FILE_SIZE") {
+      res.status(413).json({ error: `File too large — the max upload size is ${MAX_UPLOAD_FILE_BYTES / (1024 * 1024)}MB per file.` });
+      return;
+    }
+    if (err.code === "LIMIT_FILE_COUNT" || err.code === "LIMIT_UNEXPECTED_FILE") {
+      res.status(400).json({ error: "Too many files in one upload — try uploading fewer at a time." });
+      return;
+    }
+    res.status(400).json({ error: err.message || "Upload failed." });
+  });
+}
+
+app.post("/api/docs/upload", requireAuth, handleUpload, async (req, res) => {
   const sessionId: string = (req as any).sessionId;
   const files = (req.files as Express.Multer.File[]) || [];
   const added: ragStore.DocSummary[] = [];
