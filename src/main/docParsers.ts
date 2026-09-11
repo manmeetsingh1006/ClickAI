@@ -409,12 +409,42 @@ async function extractImageText(filePath: string): Promise<string> {
   return text === "(no text detected)" ? "" : text;
 }
 
+/** Formats a duration in seconds as "M:SS" (or "H:MM:SS" once past an
+ * hour) for human-readable timestamp citations (2026-09-11) -- e.g. audio
+ * players and the spec's own "meeting.mp3, 14:32-15:18" citation style
+ * both use this same plain clock format, not raw seconds. */
+function formatTimestamp(totalSeconds: number): string {
+  const s = Math.max(0, Math.round(totalSeconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const mm = h > 0 ? String(m).padStart(2, "0") : String(m);
+  const ss = String(sec).padStart(2, "0");
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
 /** Transcribes an audio or video file (mp3/mp4/mpeg/mpga/m4a/wav/webm) via
  * OpenAI's transcription endpoint. mp4/webm are submitted as-is — the
  * endpoint extracts and transcribes the audio track server-side, so no
  * local ffmpeg step (and no extra native/binary dependency) is needed here.
  * Enforces the endpoint's own 25MB file-size limit up front with a clear
- * error rather than letting a large file fail with an opaque API error. */
+ * error rather than letting a large file fail with an opaque API error.
+ *
+ * Timestamped transcription (2026-09-11, for real "meeting.mp3, 14:32-
+ * 15:18" style citations instead of a whole-file block of text): OpenAI's
+ * timestamp_granularities/verbose_json response format is ONLY supported
+ * by the whisper-1 model, NOT the newer gpt-4o-transcribe family this
+ * function used to call (confirmed against OpenAI's own docs, which
+ * explicitly route anyone who needs timestamps/subtitles to whisper-1) --
+ * so this now calls whisper-1 specifically to unlock per-segment start/end
+ * times. Each segment's timing is encoded as an invisible
+ * \u0003TS=start-end\u0003 marker prefixing its text (mirroring how
+ * extractPdfText marks PDF pages with \u0001PAGE=n\u0001), which
+ * ragStore.ts's attachTimestampMarkers strips back out while tagging every
+ * resulting chunk with a real timestamp range. Falls back to a plain,
+ * unmarked, no-timestamp transcription (the original gpt-transcribe call)
+ * if the timestamped call fails for any reason -- a transcription API
+ * hiccup on the timestamp path should never block the upload outright. */
 async function extractAudioText(filePath: string): Promise<string> {
   const apiKey = store.get("apiKey");
   if (!apiKey) {
@@ -430,14 +460,37 @@ async function extractAudioText(filePath: string): Promise<string> {
   }
 
   const client = new OpenAI({ apiKey, timeout: DEFAULT_CLIENT_TIMEOUT_MS });
-  const transcription = await withRetry(() =>
+
+  try {
+    const transcription: any = await withRetry(() =>
+      client.audio.transcriptions.create({
+        file: fsSync.createReadStream(filePath) as any,
+        model: "whisper-1",
+        response_format: "verbose_json",
+        timestamp_granularities: ["segment"],
+      } as any)
+    );
+    const segments: { start: number; end: number; text: string }[] = transcription.segments || [];
+    if (segments.length > 0) {
+      return segments
+        .map((seg) => `\u0003TS=${formatTimestamp(seg.start)}-${formatTimestamp(seg.end)}\u0003${seg.text.trim()}`)
+        .join("\n");
+    }
+    // verbose_json succeeded but came back with no segments at all (e.g. a
+    // silent/empty file) -- still usable text, just nothing to timestamp.
+    const plain = (transcription.text ?? "").trim();
+    if (plain) return plain;
+  } catch (err) {
+    console.error("[ClickAI] Timestamped (whisper-1) transcription failed, falling back to plain transcription:", err);
+  }
+
+  const fallback = await withRetry(() =>
     client.audio.transcriptions.create({
       file: fsSync.createReadStream(filePath) as any,
       model: "gpt-transcribe",
     })
   );
-
-  return (transcription.text ?? "").trim();
+  return (fallback.text ?? "").trim();
 }
 
 /** Extracts plain text from a document. Supports PDF, DOCX, Excel

@@ -36,6 +36,12 @@ interface Chunk {
    * document before any chunk is created. Recorded per chunk (not just
    * per document) so retrieval-time logging can report it directly. */
   chunkingStrategy: string;
+  /** Start/end timestamp of this chunk within its source audio/video
+   * (2026-09-11), when known -- real data from docParsers' segment-level
+   * whisper-1 transcription markers, never guessed. undefined for
+   * non-timestamped formats (PDF/DOCX/etc.). */
+  startTimestamp?: string;
+  endTimestamp?: string;
 }
 
 export interface DocSummary {
@@ -59,6 +65,12 @@ export interface RetrievedExcerpt {
   chunkId: string;
   score: number;
   chunkingStrategy: string;
+  /** Start/end timestamp of this excerpt within its source audio/video,
+   * when known (2026-09-11) -- mirrors Chunk.startTimestamp/endTimestamp
+   * so the UI can cite a timestamp range instead of a page number for
+   * transcribed audio/video documents. */
+  startTimestamp?: string;
+  endTimestamp?: string;
 }
 
 export interface RetrievedContext {
@@ -157,6 +169,13 @@ function ensureTempDir(sessionId: string): string {
 interface TextChunk {
   text: string;
   page?: number;
+  /** Start/end of this piece within a transcribed audio/video file
+   * (2026-09-11, timestamp citations -- e.g. "14:32"/"15:18"), formatted
+   * by docParsers.ts's formatTimestamp and carried through by
+   * attachTimestampMarkers below. undefined for any non-transcript
+   * source, same undefined-unless-real-data rule as `page` above. */
+  startTimestamp?: string;
+  endTimestamp?: string;
 }
 
 const PAGE_MARKER_RE = /\u0001PAGE=(\d+)\u0001\n?/g;
@@ -193,6 +212,45 @@ function attachPageMarkers(
     if (piece) pieces.push({ text: piece, page: currentPage });
   }
   return { pieces, endPage: currentPage };
+}
+
+const TIMESTAMP_MARKER_RE = /\u0003TS=([\d:]+)-([\d:]+)\u0003/g;
+
+/** Scans already page-processed pieces for invisible \u0003TS=start-end
+ * \u0003 markers (2026-09-11, audio/video timestamp citations -- see
+ * docParsers.ts's extractAudioText, which emits one marker per transcript
+ * segment) and records each resulting piece's start/end timestamp,
+ * mirroring how attachPageMarkers above handles PDF page numbers. A piece
+ * can contain MULTIPLE markers if a chunking strategy merged several
+ * transcript segments into one piece -- this takes the FIRST marker's
+ * start and the LAST marker's end, so a merged piece's timestamp range
+ * covers everything it actually contains rather than just its first
+ * segment. A piece with no marker at all (can happen if an overlap
+ * window straddles a marker boundary) inherits the running end time as
+ * its own fallback rather than being left with no timestamp at all.
+ * Never touches \u0001 PAGE or \u0002 TABLE markers, and is a harmless
+ * no-op for any document that isn't transcribed audio/video (a PDF never
+ * contains TS markers, transcribed audio never contains PAGE markers) --
+ * so it's safe to run unconditionally on every document's pieces. */
+function attachTimestampMarkers(pieces: TextChunk[]): TextChunk[] {
+  let lastEnd: string | undefined;
+  return pieces.map((piece) => {
+    let start: string | undefined;
+    let end: string | undefined;
+    TIMESTAMP_MARKER_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = TIMESTAMP_MARKER_RE.exec(piece.text))) {
+      if (!start) start = m[1];
+      end = m[2];
+    }
+    const text = piece.text.replace(TIMESTAMP_MARKER_RE, "").trim();
+    if (!start && !end) {
+      start = lastEnd;
+      end = lastEnd;
+    }
+    if (end) lastEnd = end;
+    return { ...piece, text, startTimestamp: start, endTimestamp: end };
+  });
 }
 
 /** Splits text into overlapping chunks, additionally tracking which PDF
@@ -279,7 +337,7 @@ async function chunkText(
     }
     const rawPieces = await splitProseSegment(strategy, seg.content, maxChars, overlapChars, client, model);
     const { pieces, endPage } = attachPageMarkers(rawPieces, currentPage);
-    chunks.push(...pieces);
+    chunks.push(...attachTimestampMarkers(pieces));
     currentPage = endPage;
   }
   return chunks;
@@ -449,7 +507,7 @@ export async function addDocument(
     const vectors = await embedTexts(client, pieces.map((p) => p.text), embeddingModel);
 
     pieces.forEach((piece, i) => {
-      session.chunks.push({ id: `${docId}-${i}`, docId, docName: originalName, text: piece.text, embedding: vectors[i], embeddingModel, page: piece.page, chunkingStrategy: strategy });
+      session.chunks.push({ id: `${docId}-${i}`, docId, docName: originalName, text: piece.text, embedding: vectors[i], embeddingModel, page: piece.page, chunkingStrategy: strategy, startTimestamp: piece.startTimestamp, endTimestamp: piece.endTimestamp });
     });
 
     // Persist this content+settings key's result to the cross-session
@@ -462,6 +520,8 @@ export async function addDocument(
       embeddingModel,
       page: piece.page,
       chunkingStrategy: strategy,
+      startTimestamp: piece.startTimestamp,
+      endTimestamp: piece.endTimestamp,
     }));
     writeProcessingCache(cacheKey, cacheableChunks);
 
@@ -845,6 +905,8 @@ ${question}` : question;
     chunkId: r.chunk.id,
     score: r.score,
     chunkingStrategy: r.chunk.chunkingStrategy,
+    startTimestamp: r.chunk.startTimestamp,
+    endTimestamp: r.chunk.endTimestamp,
   }));
 
   return {

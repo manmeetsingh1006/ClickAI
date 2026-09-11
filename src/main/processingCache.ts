@@ -36,6 +36,12 @@ export interface CachedChunk {
   embeddingModel: string;
   page?: number;
   chunkingStrategy: string;
+  /** Start/end timestamp within the source audio/video, when known
+   * (2026-09-11) -- mirrors ragStore.ts's Chunk.startTimestamp/
+   * endTimestamp so a cross-session cache hit for a transcribed
+   * audio/video document still carries its timestamp citations. */
+  startTimestamp?: string;
+  endTimestamp?: string;
 }
 
 interface ProcessingCacheEntry {

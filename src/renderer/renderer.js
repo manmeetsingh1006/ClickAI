@@ -296,6 +296,7 @@ function appendEvidenceForTurn(prompt, result, globalStart) {
     const badge = el("span", `cite ${citeColorClass(global)}`, String(global));
     const doc = el("span", "ev-doc", ex.docName);
     if (ex.page) doc.appendChild(el("span", "ev-page", ` · p. ${ex.page}`));
+    else if (ex.startTimestamp) doc.appendChild(el("span", "ev-page", ` · ${ex.startTimestamp}${ex.endTimestamp ? `–${ex.endTimestamp}` : ""}`));
     const conf = el("span", `ev-conf conf-${band}`, `${result.confidence ?? "—"}%`);
     head.appendChild(badge);
     head.appendChild(doc);
@@ -356,7 +357,7 @@ function copyWithCitations(result) {
   let text = result.answer.trim();
   if (result.excerpts && result.excerpts.length > 0) {
     text += "\n\nSources:\n" + result.excerpts
-      .map((ex) => `[${ex.index}] ${ex.docName}${ex.page ? ` (p. ${ex.page})` : ""}`)
+      .map((ex) => `[${ex.index}] ${ex.docName}${ex.page ? ` (p. ${ex.page})` : ex.startTimestamp ? ` (${ex.startTimestamp}${ex.endTimestamp ? `–${ex.endTimestamp}` : ""})` : ""}`)
       .join("\n");
   }
   navigator.clipboard.writeText(text).catch(() => {});
@@ -392,7 +393,7 @@ function exportConversation() {
     if (turn.result.excerpts && turn.result.excerpts.length > 0) {
       lines.push("Sources:");
       turn.result.excerpts.forEach((ex) => {
-        lines.push(`- [${ex.index}] ${ex.docName}${ex.page ? ` (p. ${ex.page})` : ""}`);
+        lines.push(`- [${ex.index}] ${ex.docName}${ex.page ? ` (p. ${ex.page})` : ex.startTimestamp ? ` (${ex.startTimestamp}${ex.endTimestamp ? `–${ex.endTimestamp}` : ""})` : ""}`);
       });
       lines.push("");
     }
