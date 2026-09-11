@@ -68,21 +68,63 @@ classic OCR engine — upload a photo of a document, a scanned page, or a
 screenshot full of text, and it gets transcribed and made searchable the
 same way as any other document. This uses a small API call per image.
 
-Audio and video (MP3/MP4/MPEG/MPGA/M4A/WAV/WEBM) are transcribed via
-OpenAI's transcription endpoint — for MP4/WEBM the audio track is
-transcribed server-side, no local video processing needed. Limited to
-25MB per file (the endpoint's own limit); for a longer recording, trim it
-or export a lower-bitrate version first.
+A scanned/photographed **PDF** page with no real text layer gets the same
+vision-model OCR treatment automatically — any page whose extracted text
+comes back essentially empty is rasterized (via poppler's `pdftoppm`; run
+`brew install poppler` if you don't already have it — without it, a
+scanned page just stays blank, no crash) and OCR'd, still tagged with its
+real page number for citations. Pages that already have a text layer are
+never touched by this.
 
-**Everything is ephemeral.** Documents and their embeddings live only in
-this session — hitting **Clear docs**, or simply quitting the app, deletes
-the temp folder, all in-memory data, and the conversation memory described
-above (clearing docs clears the conversation too, since a leftover Q&A log
-referencing documents that no longer exist is confusing). Nothing is
-written anywhere persistent, and nothing carries over between runs. A file
-over 20MB gets a heads-up that it may take a little while (there's no hard
-size limit on documents, only on audio/video — those are capped at 25MB by
-the transcription endpoint itself).
+Audio and video (MP3/MP4/MPEG/MPGA/M4A/WAV/WEBM) are transcribed via
+OpenAI's `whisper-1` model with segment-level timestamps, so citations for
+an audio/video document show a time range (e.g. `14:32–15:18`) instead of
+a page number. For MP4/WEBM the audio track is transcribed server-side, no
+local video processing needed. Limited to 25MB per file (the endpoint's
+own limit); for a longer recording, trim it or export a lower-bitrate
+version first.
+
+Re-uploading a file you've already added in this session (same content,
+detected by hash — renaming it doesn't dodge this) reuses the existing
+chunks and embeddings instead of reprocessing it from scratch.
+
+**Everything session-specific is ephemeral.** Documents, their
+embeddings, and the conversation itself live only in this session —
+hitting **Clear docs**, or simply quitting the app, deletes the temp
+folder, all in-memory data, and the conversation memory described above
+(clearing docs clears the conversation too, since a leftover Q&A log
+referencing documents that no longer exist is confusing). A file over 20MB
+gets a heads-up that it may take a little while (there's no hard size
+limit on documents, only on audio/video — those are capped at 25MB by the
+transcription endpoint itself; the web version also caps any single
+upload at 100MB). The one exception is the cross-session processing cache
+described below, which is anonymous and disk-persisted on purpose — see
+that section for exactly what it does and doesn't retain.
+
+## Performance & caching
+
+A few cost-control mechanisms run behind the scenes, all best-effort
+(never block or break an upload/answer if they fail) and all controllable
+via `config.json`:
+
+- **Cross-session processing cache** — the same file content (by hash,
+  combined with the chunking/embedding settings in effect) uploaded in a
+  *different* session, even after fully quitting and relaunching, skips
+  re-parsing/OCR/chunking/embedding entirely. Persisted to disk keyed
+  **only** by content hash + settings — never a session id, filename, or
+  timestamp-as-identity — so there's nothing in an entry that reveals who
+  uploaded it or when, only what it is. Entries expire after
+  `processingCacheTtlHours` (default 24h) and can be turned off entirely
+  via `processingCacheEnabled: false`.
+- **Answer cache** — asking the exact same question again in the same
+  session (same model, same document scope, same conversation history)
+  returns the cached answer instead of a new LLM call. Automatically
+  invalidated the moment you add or remove a document, so it never serves
+  a stale answer against a changed document set.
+- **Rate limiting** — a soft ceiling of 20 questions/minute and 50
+  documents/session per user, mainly relevant to the web version with
+  multiple concurrent logins; you'll get a clear error instead of the
+  request silently hanging if you hit either.
 
 ## Packaging (building a real .dmg)
 
@@ -161,10 +203,14 @@ separate from the ephemeral document data described above.
 
 ## Roadmap
 
-- [ ] Streaming responses instead of single request/response
+- [x] Streaming responses instead of single request/response
 - [ ] Provider-agnostic settings (Anthropic/OpenAI toggle)
 - [x] Tray icon, launch-at-login, packaged .dmg (electron-builder, macOS/arm64)
 - [x] Support more document types (xlsx, pptx, images via OCR)
+- [x] OCR fallback for scanned/image-only PDF pages
+- [x] Timestamp citations for audio/video (segment-level, via whisper-1)
+- [x] Duplicate-document detection (in-session and cross-session)
+- [x] Answer caching + basic rate limiting
 - [ ] Windows/Linux packaging targets
 - [ ] Code signing + notarization (currently unsigned — needs an Apple Developer certificate)
 - [ ] Persistent (non-ephemeral) document storage
