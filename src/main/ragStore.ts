@@ -641,17 +641,28 @@ ${question}` : question;
   // common case (the user never changed the embedding model) that's
   // still just one embed call, same cost as before.
   const modelsInPool = Array.from(new Set(pool.map((c) => c.embeddingModel || DEFAULT_EMBEDDING_MODEL)));
-  const queryVectorByModel = new Map<string, number[]>();
   const embedStart = Date.now();
-  for (const embModel of modelsInPool) {
-    // priority: true (2026-09-07 fix) -- a live question waiting on an
-    // answer must never queue behind a large document's bulk upload
-    // embedding work; see withEmbeddingSlot's comment in embeddings.ts
-    // for the real bug this fixes (a question stuck on the "thinking"
-    // indicator forever while a big CSV was still embedding).
-    const [vec] = await embedTexts(client, [retrievalQuery], embModel, true);
-    queryVectorByModel.set(embModel, vec);
-  }
+  // Embed the query against every distinct model IN PARALLEL (2026-09-11
+  // latency fix) -- these calls have no dependency on one another (each
+  // just embeds the same query text against a different model), so
+  // awaiting them one at a time in a for-loop was a pure false
+  // serialization: a user with documents from two embedding-model
+  // generations paid the full network round-trip time TWICE in a row for
+  // no reason. In the common case (one model across all uploads, which is
+  // most users, most of the time) modelsInPool has exactly one entry, so
+  // this is a no-op change in cost -- it only helps the mixed-model case.
+  // priority: true (2026-09-07 fix) -- a live question waiting on an
+  // answer must never queue behind a large document's bulk upload
+  // embedding work; see withEmbeddingSlot's comment in embeddings.ts for
+  // the real bug this fixes (a question stuck on the "thinking" indicator
+  // forever while a big CSV was still embedding).
+  const embeddedPairs = await Promise.all(
+    modelsInPool.map(async (embModel) => {
+      const [vec] = await embedTexts(client, [retrievalQuery], embModel, true);
+      return [embModel, vec] as const;
+    })
+  );
+  const queryVectorByModel = new Map<string, number[]>(embeddedPairs);
   const embedMs = Date.now() - embedStart;
   const queryTerms = extractTerms(retrievalQuery);
 
