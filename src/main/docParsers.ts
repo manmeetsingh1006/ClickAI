@@ -1,9 +1,14 @@
 import * as fs from "fs/promises";
 import * as fsSync from "fs";
 import * as path from "path";
+import * as os from "os";
+import { execFile } from "child_process";
+import { promisify } from "util";
 import OpenAI from "openai";
 import { store } from "./store";
 import { withRetry, DEFAULT_CLIENT_TIMEOUT_MS } from "./retry";
+
+const execFileAsync = promisify(execFile);
 
 const mammoth = require("mammoth");
 const ExcelJS = require("exceljs");
@@ -81,6 +86,71 @@ function getPdfjs(): Promise<any> {
   return pdfjsLibPromise;
 }
 
+// A page's real text-layer content (pdfjs's getTextContent()) is
+// essentially empty for a scanned/photographed page — there's no OCR
+// happening at the pdfjs level, only whatever text layer the PDF itself
+// already embeds. Below this many non-whitespace characters, a page is
+// treated as image-only and handed to the vision-model OCR fallback
+// below rather than being silently left blank. Deliberately low (not
+// "must be truly empty") — OCR here is strictly additive/best-effort,
+// so a wrong guess on a genuinely sparse-but-real text page just costs
+// one unnecessary rasterize+OCR call, it never loses anything the real
+// text layer already had.
+const SPARSE_PDF_PAGE_TEXT_THRESHOLD = 20;
+function isPdfPageTextSparse(text: string): boolean {
+  return text.replace(/\s+/g, "").length < SPARSE_PDF_PAGE_TEXT_THRESHOLD;
+}
+
+/** Rasterizes a single PDF page to a PNG via poppler's `pdftoppm`
+ * (2026-09-11, scanned-PDF OCR fallback) — a system tool, not a bundled
+ * npm dependency, matching extractImageText's own stated tradeoff of
+ * avoiding multi-megabyte native rendering/OCR engines in an Electron
+ * app that isn't packaged/distributed yet. `pdftoppm` ships with
+ * poppler (`brew install poppler` on macOS); when it isn't installed,
+ * or the render fails for any other reason, this returns null rather
+ * than throwing — a missing system tool should only mean "no OCR
+ * fallback for this one page", never "fail the whole upload". */
+async function rasterizePdfPageToPng(filePath: string, pageNum: number): Promise<Buffer | null> {
+  let outDir: string | null = null;
+  try {
+    outDir = await fs.mkdtemp(path.join(os.tmpdir(), "clickai-pdf-ocr-"));
+    const outPrefix = path.join(outDir, "page");
+    await execFileAsync("pdftoppm", [
+      "-png",
+      "-r", "150",
+      "-f", String(pageNum),
+      "-l", String(pageNum),
+      "-singlefile",
+      filePath,
+      outPrefix,
+    ]);
+    return await fs.readFile(`${outPrefix}.png`);
+  } catch (err) {
+    console.error(`[ClickAI] Couldn't rasterize PDF page ${pageNum} for OCR (is poppler/pdftoppm installed?):`, err);
+    return null;
+  } finally {
+    if (outDir) {
+      fs.rm(outDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+}
+
+/** Best-effort OCR fallback for one sparse/scanned PDF page — rasterizes
+ * it and runs it through the same vision-model OCR path as
+ * extractImageText. Never throws: any failure (no pdftoppm, no API key,
+ * a transient API error) just means this page keeps its original
+ * (possibly empty) text-layer content instead of gaining OCR text. */
+async function tryOcrScannedPdfPage(filePath: string, pageNum: number): Promise<string | null> {
+  const png = await rasterizePdfPageToPng(filePath, pageNum);
+  if (!png) return null;
+  try {
+    return await ocrImageBuffer(png, "image/png");
+  } catch (err) {
+    console.error(`[ClickAI] OCR fallback failed for scanned PDF page ${pageNum}:`, err);
+    return null;
+  }
+}
+
 async function extractPdfText(filePath: string): Promise<string> {
   const pdfjsLib = await getPdfjs();
   const buffer = await fs.readFile(filePath);
@@ -104,7 +174,17 @@ async function extractPdfText(filePath: string): Promise<string> {
     for (let i = 1; i <= pdf.numPages; i++) {
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
-      const text = content.items.map((item: any) => ("str" in item ? item.str : "")).join(" ");
+      let text = content.items.map((item: any) => ("str" in item ? item.str : "")).join(" ");
+      // Scanned-PDF OCR fallback (2026-09-11) — a page with next to no
+      // real text-layer content is treated as image-only and OCR'd via
+      // the vision model instead of being left blank. Sequential (one
+      // page at a time, not run in parallel across the whole document)
+      // deliberately — a heavily-scanned PDF could otherwise fire off
+      // dozens of concurrent vision-model calls at once.
+      if (isPdfPageTextSparse(text)) {
+        const ocrText = await tryOcrScannedPdfPage(filePath, i);
+        if (ocrText) text = ocrText;
+      }
       pageTexts.push(`\u0001PAGE=${i}\u0001\n${text}`);
     }
     return pageTexts.join("\n\n");
@@ -376,17 +456,20 @@ async function extractHtmlText(filePath: string): Promise<string> {
  * Costs a small API call per image; that's an acceptable tradeoff here
  * since document upload is already an explicit, occasional user action,
  * not something on a hot path. */
-async function extractImageText(filePath: string): Promise<string> {
+/** Shared vision-model OCR call (2026-09-11, pulled out of
+ * extractImageText so the scanned-PDF OCR fallback above can reuse the
+ * exact same prompt/model/parsing instead of duplicating it) — OCRs one
+ * already-in-memory image buffer and returns its transcribed text ("" if
+ * the image genuinely has no readable text). Throws if there's no API
+ * key or the API call itself fails; callers that want a soft failure
+ * (like the scanned-PDF fallback) catch around this themselves. */
+async function ocrImageBuffer(buffer: Buffer, mimeType: string): Promise<string> {
   const apiKey = store.get("apiKey");
   if (!apiKey) {
     throw new Error("No OpenAI API key set. Open ClickAI settings and add your API key.");
   }
 
-  const ext = path.extname(filePath).toLowerCase();
-  const mimeType = IMAGE_MIME_TYPES[ext] || "image/png";
-  const buffer = await fs.readFile(filePath);
   const dataUrl = `data:${mimeType};base64,${buffer.toString("base64")}`;
-
   const client = new OpenAI({ apiKey, timeout: DEFAULT_CLIENT_TIMEOUT_MS });
   const model = store.get("model") || "gpt-5.4";
 
@@ -407,6 +490,13 @@ async function extractImageText(filePath: string): Promise<string> {
 
   const text = ((response as any).output_text ?? "").trim();
   return text === "(no text detected)" ? "" : text;
+}
+
+async function extractImageText(filePath: string): Promise<string> {
+  const ext = path.extname(filePath).toLowerCase();
+  const mimeType = IMAGE_MIME_TYPES[ext] || "image/png";
+  const buffer = await fs.readFile(filePath);
+  return ocrImageBuffer(buffer, mimeType);
 }
 
 /** Formats a duration in seconds as "M:SS" (or "H:MM:SS" once past an
