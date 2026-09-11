@@ -9,6 +9,7 @@ import { embedTexts, cosineSimilarity, DEFAULT_EMBEDDING_MODEL } from "./embeddi
 import { withRetry, DEFAULT_CLIENT_TIMEOUT_MS } from "./retry";
 import { ChunkingStrategy, DEFAULT_CHUNKING_STRATEGY, splitProseSegment, chooseAutoStrategy } from "./chunking";
 import { logError, logChunking } from "./debugLog";
+import { readProcessingCache, writeProcessingCache, sweepExpiredProcessingCache, CachedChunk } from "./processingCache";
 
 interface Chunk {
   id: string;
@@ -101,14 +102,26 @@ interface SessionState {
    * session (e.g. the same file uploaded twice, or re-uploaded after
    * being removed), never across sessions or after logout. */
   docCacheKeys: Map<string, string>;
+  /** Session-scoped answer cache (2026-09-11, spec section 29 "Answer
+   * Cache") -- keyed by a caller-built string (model + docId + history +
+   * normalized question, see openai.ts's askDocs), values are opaque
+   * `unknown` here specifically so ragStore.ts never needs to import
+   * openai.ts's AskResult type (openai.ts already imports FROM
+   * ragStore.ts -- importing back would be a circular dependency).
+   * Cleared on every addDocument call (new/changed content invalidates
+   * any previously cached answer) and freed entirely on clearAll/logout,
+   * same as every other piece of session state. */
+  answerCache: Map<string, unknown>;
 }
 
 const sessions = new Map<string, SessionState>();
 
+sweepExpiredProcessingCache();
+
 function getSessionState(sessionId: string): SessionState {
   let s = sessions.get(sessionId);
   if (!s) {
-    s = { tempDir: null, chunks: [], docs: [], docCacheKeys: new Map() };
+    s = { tempDir: null, chunks: [], docs: [], docCacheKeys: new Map(), answerCache: new Map() };
     sessions.set(sessionId, s);
   }
   return s;
@@ -352,6 +365,28 @@ export async function addDocument(
       const summary: DocSummary = { id: docId, name: originalName, chunkCount: sourceChunks.length };
       session.docs.push(summary);
       session.docCacheKeys.set(docId, cacheKey);
+      session.answerCache.clear();
+      return summary;
+    }
+
+    // Cross-session processing cache (2026-09-11, see processingCache.ts)
+    // -- the same content+settings key checked above against THIS
+    // session's own documents is now checked against the cross-session
+    // disk cache: content this or a DIFFERENT session already processed
+    // and persisted (content-hash-addressed only, no identity attached).
+    // A hit still means zero OCR/parsing/chunking/embedding work, exactly
+    // like the in-session dedup above, just sourced from disk instead of
+    // another already-open document.
+    const diskCachedChunks = readProcessingCache(cacheKey);
+    if (diskCachedChunks) {
+      onProgress?.(`${originalName} matches content processed previously — reusing the cached result, no re-reading, chunking, or embedding needed…`);
+      diskCachedChunks.forEach((c, i) => {
+        session.chunks.push({ ...c, id: `${docId}-${i}`, docId, docName: originalName });
+      });
+      const summary: DocSummary = { id: docId, name: originalName, chunkCount: diskCachedChunks.length };
+      session.docs.push(summary);
+      session.docCacheKeys.set(docId, cacheKey);
+      session.answerCache.clear();
       return summary;
     }
 
@@ -417,6 +452,19 @@ export async function addDocument(
       session.chunks.push({ id: `${docId}-${i}`, docId, docName: originalName, text: piece.text, embedding: vectors[i], embeddingModel, page: piece.page, chunkingStrategy: strategy });
     });
 
+    // Persist this content+settings key's result to the cross-session
+    // disk cache (2026-09-11) so a LATER session uploading the same
+    // content hits the read path above instead of reprocessing. No
+    // docId/docName/session identity is stored -- see processingCache.ts.
+    const cacheableChunks: CachedChunk[] = pieces.map((piece, i) => ({
+      text: piece.text,
+      embedding: vectors[i],
+      embeddingModel,
+      page: piece.page,
+      chunkingStrategy: strategy,
+    }));
+    writeProcessingCache(cacheKey, cacheableChunks);
+
     // Full chunking audit log (2026-09-07, "log everything, even chunking
     // and which chunk used") — every chunk this document was split into,
     // regardless of whether a question ever retrieves it, plus which
@@ -441,6 +489,7 @@ export async function addDocument(
     const summary: DocSummary = { id: docId, name: originalName, chunkCount: pieces.length };
     session.docs.push(summary);
     session.docCacheKeys.set(docId, cacheKey);
+    session.answerCache.clear();
     return summary;
   } catch (err: any) {
     logError({ stage: "upload", message: err.message || String(err), docName: originalName });
@@ -454,6 +503,18 @@ export function listDocuments(sessionId: string): DocSummary[] {
 
 export function hasDocuments(sessionId: string): boolean {
   return getSessionState(sessionId).chunks.length > 0;
+}
+
+/** Answer cache accessors (2026-09-11) -- deliberately typed `unknown` on
+ * both sides (see SessionState.answerCache above) so this module stays
+ * independent of openai.ts's AskResult shape; openai.ts casts back to
+ * AskResult itself, since it's the only place that knows that shape. */
+export function getCachedAnswer(sessionId: string, cacheKey: string): unknown | undefined {
+  return getSessionState(sessionId).answerCache.get(cacheKey);
+}
+
+export function setCachedAnswer(sessionId: string, cacheKey: string, value: unknown): void {
+  getSessionState(sessionId).answerCache.set(cacheKey, value);
 }
 
 const STOPWORDS = new Set([

@@ -83,8 +83,38 @@ app.use(express.json({ limit: "1mb" }));
 // that session's documents/chunks/embeddings/temp files — see
 // ragStore.ts's clearAll(sessionId). authStore.ts never imports ragStore
 // itself; this is the one place the two are connected.
+// Rate limiting (2026-09-11, spec-driven cost/abuse control -- section 39
+// "Rate Limiting"): this is a small shared web deployment (one temporary
+// login, not per-user billing), so the goal here is just bounding
+// worst-case cost/abuse from a single misbehaving client, not fair-use
+// accounting across many tenants. Both limits are in-memory and
+// session-scoped, cleaned up alongside everything else when a session
+// ends (see setSessionDestroyedHandler below).
+const MAX_QUESTIONS_PER_MINUTE = 20;
+const MAX_DOCS_PER_SESSION = 50;
+const questionTimestamps = new Map<string, number[]>(); // sessionId -> recent question times (ms)
+
+/** Sliding-window check: true if this session may ask another question
+ * right now (and records that it did); false if it's over the per-minute
+ * limit. A plain array-of-timestamps sliding window rather than a token
+ * bucket -- simple, and at this scale (one shared login, <=20/min) the
+ * O(n) prune on each call is negligible. */
+function checkQuestionRateLimit(sessionId: string): boolean {
+  const now = Date.now();
+  const windowStart = now - 60_000;
+  const recent = (questionTimestamps.get(sessionId) || []).filter((t) => t > windowStart);
+  if (recent.length >= MAX_QUESTIONS_PER_MINUTE) {
+    questionTimestamps.set(sessionId, recent);
+    return false;
+  }
+  recent.push(now);
+  questionTimestamps.set(sessionId, recent);
+  return true;
+}
+
 setSessionDestroyedHandler((sessionId) => {
   ragStore.clearAll(sessionId);
+  questionTimestamps.delete(sessionId);
 });
 
 /** Reads the session cookie off a request and returns its (still-valid,
@@ -204,6 +234,10 @@ function startStream(res: express.Response) {
 
 app.post("/api/docs", requireAuth, async (req, res) => {
   const sessionId: string = (req as any).sessionId;
+  if (!checkQuestionRateLimit(sessionId)) {
+    res.status(429).json({ error: "You're asking questions faster than I can keep up with — wait a moment and try again." });
+    return;
+  }
   const stream = startStream(res);
   try {
     const prompt = String(req.body?.prompt || "");
@@ -317,6 +351,20 @@ function handleUpload(req: express.Request, res: express.Response, next: express
 app.post("/api/docs/upload", requireAuth, handleUpload, async (req, res) => {
   const sessionId: string = (req as any).sessionId;
   const files = (req.files as Express.Multer.File[]) || [];
+
+  // Per-session document count cap (2026-09-11, spec section 39/40) --
+  // bounds worst-case in-memory growth (every chunk/embedding for every
+  // document lives in process memory for the life of the session, see
+  // ragStore.ts's SessionState) from one session uploading an unbounded
+  // number of documents.
+  const existingCount = ragStore.listDocuments(sessionId).length;
+  if (existingCount + files.length > MAX_DOCS_PER_SESSION) {
+    res.status(400).json({
+      error: `This session already has ${existingCount} document${existingCount === 1 ? "" : "s"} — the limit is ${MAX_DOCS_PER_SESSION} per session. Clear some documents first, or log out and back in to start a fresh session.`,
+    });
+    return;
+  }
+
   const added: ragStore.DocSummary[] = [];
   const errors: { fileName: string; message: string }[] = [];
 

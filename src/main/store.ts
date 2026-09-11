@@ -45,6 +45,29 @@ interface ClickAIConfig {
    * 2026-09-08), so it should stay on unless the user deliberately wants
    * it off. */
   rerankingEnabled: boolean;
+  /** Cross-session processing cache (2026-09-11, spec section 18
+   * "Privacy-Aware Cache" / section 46 "Cost Optimization Architecture")
+   * -- when on, ragStore.ts's addDocument() saves a de-identified record
+   * of an uploaded file's processed chunks/embeddings (keyed ONLY by a
+   * content hash + processing settings -- see processingCache.ts) so
+   * that the SAME file content uploaded again in a LATER session/login
+   * skips OCR/parsing/chunking/embedding entirely, not just within one
+   * still-open session (ragStore.ts's own in-session dedup already
+   * covers that case for free). This is the one piece of ClickAI's
+   * otherwise fully ephemeral storage that persists to disk across
+   * sessions, so it's a genuine privacy tradeoff the spec explicitly
+   * calls out as needing to be an explicit, visible, user-controlled
+   * choice rather than a silent default -- hence a real Settings toggle,
+   * defaulted ON here since the cache holds no session id, user
+   * identity, chat history, or original filename (see
+   * processingCache.ts), only content-hash-addressed chunk text and
+   * vectors, bounded by processingCacheTtlHours below. */
+  processingCacheEnabled: boolean;
+  /** How long a processing-cache entry is reused before being treated as
+   * stale and deleted (2026-09-11) -- the spec's explicit "TTL as a
+   * safety net" principle (#8), so cached content doesn't accumulate on
+   * disk forever even if never explicitly cleared. */
+  processingCacheTtlHours: number;
 }
 
 const defaults: ClickAIConfig = {
@@ -56,6 +79,8 @@ const defaults: ClickAIConfig = {
   chunkOverlapChars: 190,
   embeddingModel: "text-embedding-3-small",
   rerankingEnabled: true,
+  processingCacheEnabled: true,
+  processingCacheTtlHours: 24,
 };
 
 export function configDir(): string {

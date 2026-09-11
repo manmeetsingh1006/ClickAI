@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import { randomUUID } from "crypto";
 import { store } from "./store";
-import { getRelevantContext, listDocuments, RetrievedExcerpt } from "./ragStore";
+import { getRelevantContext, listDocuments, RetrievedExcerpt, getCachedAnswer, setCachedAnswer } from "./ragStore";
 import { DEFAULT_CLIENT_TIMEOUT_MS } from "./retry";
 import { logPerf, logError } from "./debugLog";
 
@@ -239,6 +239,27 @@ async function streamResponseText(
  * there's no model call at all, so onDelta simply never fires — the caller
  * just gets the canned answer directly in the returned AskResult.
  */
+/** Answer cache (2026-09-11, spec section 29 "Answer Cache"): a repeated
+ * IDENTICAL question (same session, same document scope, same model, same
+ * prior conversation, same exact wording modulo case/whitespace) skips
+ * retrieval, reranking, AND generation entirely and returns the same
+ * AskResult instantly. Deliberately narrow -- history is part of the key,
+ * not ignored, so a follow-up question is never accidentally served a
+ * cached answer meant for a different conversational context. Invalidated
+ * automatically whenever this session's documents change at all (see
+ * ragStore.ts's addDocument, which clears the whole per-session answer
+ * cache on every upload) -- there's no plausible way for a cached answer
+ * to go stale otherwise, since nothing else in a session's document set
+ * changes underneath a question. */
+function normalizeQuestionForCache(q: string): string {
+  return q.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function buildAnswerCacheKey(model: string, docId: string | undefined, history: ConversationTurn[], prompt: string): string {
+  const historyKey = history.map((h) => `${h.role}:${h.text}`).join("||");
+  return `${model}::${docId ?? "ALL"}::${historyKey}::${normalizeQuestionForCache(prompt)}`;
+}
+
 export async function askDocs(
   /** Which user/session this question belongs to (2026-09-08,
    * multi-session isolation) — threaded through to ragStore so a
@@ -257,6 +278,13 @@ export async function askDocs(
 ): Promise<AskResult> {
   const requestId = randomUUID();
   const askStart = Date.now();
+
+  const cacheKey = buildAnswerCacheKey(store.get("model") || "gpt-5.4", docId, history, prompt);
+  const cached = getCachedAnswer(sessionId, cacheKey);
+  if (cached) {
+    return cached as AskResult;
+  }
+
   const retrievalHint = buildRetrievalHint(history);
   let docContext;
   try {
@@ -287,7 +315,7 @@ export async function askDocs(
       totalMs: Date.now() - askStart,
       chunksUsed: [],
     });
-    return {
+    const notFoundResult: AskResult = {
       answer: scopedDoc
         ? `I couldn't find anything relevant to that in "${scopedDoc.name}". Try rephrasing the question, or switch to a different document.`
         : "I couldn't find anything relevant to that in your uploaded documents. Try rephrasing the question, or check that you've uploaded the right document.",
@@ -298,6 +326,8 @@ export async function askDocs(
       // badge at all.
       confidence: NOT_FOUND_CONFIDENCE_CAP,
     };
+    setCachedAnswer(sessionId, cacheKey, notFoundResult);
+    return notFoundResult;
   }
 
   const { client, model } = getClient();
@@ -390,10 +420,12 @@ export async function askDocs(
     })),
   });
 
-  return {
+  const result: AskResult = {
     answer,
     sources: docContext.sources,
     confidence: safeConfidence,
     excerpts: docContext.excerpts,
   };
+  setCachedAnswer(sessionId, cacheKey, result);
+  return result;
 }
