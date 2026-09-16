@@ -850,33 +850,66 @@ function withTimeout(promise, ms, timeoutMessage) {
   ]);
 }
 
+// Multiple upload BATCHES (2026-09-16, fixes "can't add another document
+// while the last one is still chunking") can now run at once -- one from
+// the file picker, another from a drag-and-drop, dropped while the first
+// is still embedding. This counter is only here so the shared status
+// line/timer don't get stopped by whichever batch happens to finish
+// first while others are still going; it never blocks a NEW batch from
+// starting.
+let activeUploadBatches = 0;
+
 async function handleUploadResult(resultPromise) {
+  activeUploadBatches++;
   try {
     const result = await resultPromise;
+    const stillOthersRunning = activeUploadBatches > 1;
     for (const err of result.errors || []) {
-      setDocsStatus(`Couldn't add ${err.fileName}: ${err.message}`, false);
+      setDocsStatus(`Couldn't add ${err.fileName}: ${err.message}`, stillOthersRunning);
     }
     if ((result.added || []).length > 0) {
-      setDocsStatus(`Added ${result.added.length} document${result.added.length === 1 ? "" : "s"}.`, false);
+      setDocsStatus(`Added ${result.added.length} document${result.added.length === 1 ? "" : "s"}.`, stillOthersRunning);
     } else if ((result.errors || []).length === 0) {
-      setDocsStatus("", false);
+      setDocsStatus("", stillOthersRunning);
     }
     await refreshDocsList();
   } catch (err) {
-    setDocsStatus(err.message || String(err), false);
+    setDocsStatus(err.message || String(err), activeUploadBatches > 1);
+  } finally {
+    activeUploadBatches--;
   }
 }
 
 docsUploadBtn.addEventListener("click", async () => {
+  // Only guards the native file-picker dialog itself (Electron's overlay
+  // always-on-top toggling around it isn't safe to run twice at once) --
+  // re-enabled the instant the dialog closes, NOT after the documents it
+  // returns finish processing. That's the actual fix: picking more files
+  // is never blocked by an earlier batch still chunking/embedding.
   docsUploadBtn.disabled = true;
   setDocsStatus("Opening file picker…", true);
+  let filePaths;
   try {
-    await handleUploadResult(
-      withTimeout(window.clickai.uploadDocuments(), 120000, "File picker didn't respond. Try clicking \"+ Add\" again.")
+    const result = await withTimeout(
+      window.clickai.uploadDocuments(),
+      120000,
+      "File picker didn't respond. Try clicking \"+ Add\" again."
     );
-  } finally {
+    filePaths = result.filePaths || [];
+  } catch (err) {
     docsUploadBtn.disabled = false;
+    setDocsStatus(err.message || String(err), false);
+    return;
   }
+  docsUploadBtn.disabled = false;
+  if (filePaths.length === 0) {
+    if (activeUploadBatches === 0) setDocsStatus("", false);
+    return;
+  }
+  // ETA display (desktop) comes from main.ts pushing "docs-status-eta"
+  // itself once addDocumentPaths() there starts -- nothing to compute
+  // client-side here.
+  handleUploadResult(window.clickai.addDocumentPaths(filePaths));
 });
 
 // Drag-and-drop works over the whole panel regardless of where the docs
@@ -894,20 +927,19 @@ docsTab.addEventListener("dragleave", (e) => {
   dragDepth = Math.max(0, dragDepth - 1);
   if (dragDepth === 0) docsTab.classList.remove("drag-over");
 });
-docsTab.addEventListener("drop", async (e) => {
+docsTab.addEventListener("drop", (e) => {
   e.preventDefault();
   dragDepth = 0;
   docsTab.classList.remove("drag-over");
   const files = Array.from(e.dataTransfer?.files || []);
   const filePaths = files.map((f) => f.path).filter(Boolean);
   if (filePaths.length === 0) return;
-  docsUploadBtn.disabled = true;
+  // No dialog involved here, so nothing needs guarding at all -- this can
+  // fire concurrently with the file-picker flow above, or with another
+  // drop, without blocking anything (2026-09-16, same fix as the "+ Add"
+  // button).
   setDocsStatus(`Adding ${filePaths.length} file${filePaths.length === 1 ? "" : "s"}…`, true);
-  try {
-    await handleUploadResult(window.clickai.addDocumentPaths(filePaths));
-  } finally {
-    docsUploadBtn.disabled = false;
-  }
+  handleUploadResult(window.clickai.addDocumentPaths(filePaths));
 });
 
 docsClearBtn.addEventListener("click", async () => {

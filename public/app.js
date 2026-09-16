@@ -949,20 +949,35 @@ async function refreshDocsList() {
 // Shared by both the file-picker upload flow and the drag-and-drop flow —
 // both end up with an { added, errors } result from the server and need
 // the exact same status/list handling.
+//
+// Multiple upload BATCHES can now run at once (2026-09-16, fixes "can't
+// add another document while the last one is still chunking") -- a
+// second file-picker selection, or a drop, fired while an earlier batch
+// is still uploading/embedding. activeUploadBatches only exists so the
+// shared status line/timer isn't stopped by whichever batch happens to
+// finish first while others are still going; it never blocks a NEW batch
+// from starting (see the two listeners below, which no longer disable
+// anything while a batch is in flight).
+let activeUploadBatches = 0;
+
 async function handleUploadResult(resultPromise) {
+  activeUploadBatches++;
   try {
     const result = await resultPromise;
+    const stillOthersRunning = activeUploadBatches > 1;
     for (const err of result.errors || []) {
-      setDocsStatus(`Couldn't add ${err.fileName}: ${err.message}`, false);
+      setDocsStatus(`Couldn't add ${err.fileName}: ${err.message}`, stillOthersRunning);
     }
     if ((result.added || []).length > 0) {
-      setDocsStatus(`Added ${result.added.length} document${result.added.length === 1 ? "" : "s"}.`, false);
+      setDocsStatus(`Added ${result.added.length} document${result.added.length === 1 ? "" : "s"}.`, stillOthersRunning);
     } else if ((result.errors || []).length === 0) {
-      setDocsStatus("", false);
+      setDocsStatus("", stillOthersRunning);
     }
     await refreshDocsList();
   } catch (err) {
-    setDocsStatus(err.message || String(err), false);
+    setDocsStatus(err.message || String(err), activeUploadBatches > 1);
+  } finally {
+    activeUploadBatches--;
   }
 }
 
@@ -979,18 +994,17 @@ async function uploadFiles(files) {
 
 docsUploadBtn.addEventListener("click", () => docsFileInput.click());
 
-docsFileInput.addEventListener("change", async () => {
+docsFileInput.addEventListener("change", () => {
   const files = Array.from(docsFileInput.files || []);
   docsFileInput.value = "";
   if (files.length === 0) return;
-  docsUploadBtn.disabled = true;
+  // The browser's own file picker is safe to reopen at any time (unlike
+  // Electron's native dialog, there's no shared window state to guard),
+  // so nothing here blocks starting this batch while an earlier one is
+  // still processing.
   setDocsStatus(`Adding ${files.length} file${files.length === 1 ? "" : "s"}…`, true);
   setDocsEta(estimateProcessingLabel(files));
-  try {
-    await handleUploadResult(uploadFiles(files));
-  } finally {
-    docsUploadBtn.disabled = false;
-  }
+  handleUploadResult(uploadFiles(files));
 });
 
 // Drag-and-drop works over the whole panel, so a file can be dropped
@@ -1008,20 +1022,15 @@ docsTab.addEventListener("dragleave", (e) => {
   dragDepth = Math.max(0, dragDepth - 1);
   if (dragDepth === 0) docsTab.classList.remove("drag-over");
 });
-docsTab.addEventListener("drop", async (e) => {
+docsTab.addEventListener("drop", (e) => {
   e.preventDefault();
   dragDepth = 0;
   docsTab.classList.remove("drag-over");
   const files = Array.from(e.dataTransfer?.files || []);
   if (files.length === 0) return;
-  docsUploadBtn.disabled = true;
   setDocsStatus(`Adding ${files.length} file${files.length === 1 ? "" : "s"}…`, true);
   setDocsEta(estimateProcessingLabel(files));
-  try {
-    await handleUploadResult(uploadFiles(files));
-  } finally {
-    docsUploadBtn.disabled = false;
-  }
+  handleUploadResult(uploadFiles(files));
 });
 
 docsClearBtn.addEventListener("click", async () => {

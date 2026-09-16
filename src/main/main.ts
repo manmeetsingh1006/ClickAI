@@ -370,8 +370,18 @@ async function addDocumentPaths(
   return { added, errors };
 }
 
+// Deliberately returns just the picked paths, NOT the processed result
+// (2026-09-16, fixes "can't add another document while the last one is
+// still chunking") -- this used to call addDocumentPaths() and make the
+// whole IPC call (and therefore the renderer's disabled-button window)
+// wait for the ENTIRE chunk/embed pipeline to finish before the dialog
+// itself was even considered "done". Splitting it means the renderer can
+// re-enable "+ Add" the instant the native dialog closes, and kick off
+// addDocumentPaths() (below) as its own independent call -- so a second
+// "+ Add" click (or a drag-and-drop) can start a NEW batch while an
+// earlier one is still embedding, instead of being blocked behind it.
 ipcMain.handle("upload-documents", async () => {
-  if (!overlayWindow) return { added: [], errors: [] };
+  if (!overlayWindow) return { filePaths: [] };
   const win = overlayWindow;
 
   // The overlay is a frameless, always-on-top window. Attaching the native
@@ -410,10 +420,10 @@ ipcMain.handle("upload-documents", async () => {
   }
 
   if (result.canceled || result.filePaths.length === 0) {
-    return { added: [], errors: [] };
+    return { filePaths: [] };
   }
 
-  return addDocumentPaths(result.filePaths);
+  return { filePaths: result.filePaths };
 });
 
 // Drag-and-drop upload (2026-09-01): the renderer reads dropped files'
