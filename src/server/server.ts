@@ -112,9 +112,23 @@ function checkQuestionRateLimit(sessionId: string): boolean {
   return true;
 }
 
+// Deliberately fire-and-forget, not awaited by the logout route below
+// (2026-09-16, fixes a logout-mid-upload race) -- the session's auth
+// record is already gone the instant destroySession() runs (see
+// authStore.ts), so the logout response comes back immediately and no
+// further authenticated request can succeed for this session, exactly
+// as before. What's deferred is only the ragStore purge: if a document
+// upload was still chunking/embedding for this session, waitForPendingUploads
+// lets it actually finish (so its temp folder isn't deleted out from
+// under an in-progress read, and the result durably reaches the disk
+// processing cache) before clearAll() tears the session's document
+// state down. A session with no upload in flight resolves this
+// immediately, so the common case is unaffected.
 setSessionDestroyedHandler((sessionId) => {
-  ragStore.clearAll(sessionId);
   questionTimestamps.delete(sessionId);
+  ragStore.waitForPendingUploads(sessionId).then(() => {
+    ragStore.clearAll(sessionId);
+  });
 });
 
 /** Reads the session cookie off a request and returns its (still-valid,

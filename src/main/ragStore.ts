@@ -130,6 +130,64 @@ const sessions = new Map<string, SessionState>();
 
 sweepExpiredProcessingCache();
 
+/**
+ * Pending-upload tracking (2026-09-16) -- fixes a real logout-mid-upload
+ * race: addDocument() captures `session` (the SessionState object) once
+ * near the top and keeps writing into that same object for the rest of
+ * its run. If clearAll(sessionId) (called on logout/idle-timeout, see
+ * server.ts's setSessionDestroyedHandler) deletes that sessionId's entry
+ * from `sessions` WHILE addDocument is still chunking/embedding, three
+ * things went wrong before this fix: (1) clearAll also deletes the
+ * session's temp folder, so an addDocument still reading the copied file
+ * out of it could fail outright mid-extraction; (2) even if it survived
+ * that, the finished chunks got pushed into an orphaned SessionState
+ * object nobody could ever read again -- not the user (their session
+ * cookie is already gone), not a later session (different sessionId);
+ * (3) the cross-session processing cache write, while NOT dependent on
+ * `session` at all and so not actually at risk of loss, could still race
+ * against a half-deleted temp folder upstream of it.
+ *
+ * The fix: track every addDocument() call currently in flight per
+ * session, and have the logout/idle-timeout path (waitForPendingUploads
+ * below) wait for them to actually finish before clearAll() runs -- so a
+ * document that was already being processed when you log out completes
+ * normally (durably reaching the disk cache, TTL-governed by
+ * processingCacheTtlHours) instead of being cut off and orphaned. This
+ * map is deliberately separate from SessionState (not just another field
+ * on it) so it survives even after clearAll() deletes the SessionState
+ * entry -- something has to still be reachable by sessionId to wait on.
+ */
+const pendingUploads = new Map<string, Set<Promise<void>>>();
+
+function trackPendingUpload(sessionId: string, marker: Promise<void>): void {
+  let set = pendingUploads.get(sessionId);
+  if (!set) {
+    set = new Set();
+    pendingUploads.set(sessionId, set);
+  }
+  set.add(marker);
+}
+
+function untrackPendingUpload(sessionId: string, marker: Promise<void>): void {
+  const set = pendingUploads.get(sessionId);
+  if (!set) return;
+  set.delete(marker);
+  if (set.size === 0) pendingUploads.delete(sessionId);
+}
+
+/** Waits for every addDocument() call currently in flight for this
+ * session to actually finish -- successfully or not, this never rejects,
+ * since the only thing callers need is "don't tear down state a
+ * still-running upload is about to touch", not the upload's own result.
+ * A session with nothing in flight resolves immediately. Exported so
+ * server.ts's setSessionDestroyedHandler (logout + idle-timeout) can
+ * await this before calling clearAll(). */
+export async function waitForPendingUploads(sessionId: string): Promise<void> {
+  const set = pendingUploads.get(sessionId);
+  if (!set || set.size === 0) return;
+  await Promise.allSettled(Array.from(set));
+}
+
 function getSessionState(sessionId: string): SessionState {
   let s = sessions.get(sessionId);
   if (!s) {
@@ -348,7 +406,30 @@ async function chunkText(
  * temp folder (and everything in it) is deleted by clearAll(sessionId)/
  * teardown(). `sessionId` (2026-09-08, multi-session isolation) scopes
  * this document to one user's index only — see SessionState above. */
+/** Thin wrapper around addDocumentInner (2026-09-16) that registers this
+ * call in the pendingUploads tracking above for its entire duration --
+ * see the big comment there for exactly what race this closes. Every
+ * actual code path lives in addDocumentInner, unchanged; this wrapper
+ * adds nothing but the tracking. */
 export async function addDocument(
+  sessionId: string,
+  filePath: string,
+  onProgress?: (message: string) => void
+): Promise<DocSummary> {
+  let settle: () => void = () => {};
+  const marker = new Promise<void>((resolve) => {
+    settle = resolve;
+  });
+  trackPendingUpload(sessionId, marker);
+  try {
+    return await addDocumentInner(sessionId, filePath, onProgress);
+  } finally {
+    settle();
+    untrackPendingUpload(sessionId, marker);
+  }
+}
+
+async function addDocumentInner(
   sessionId: string,
   filePath: string,
   onProgress?: (message: string) => void
