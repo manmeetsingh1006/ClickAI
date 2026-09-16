@@ -231,6 +231,33 @@ function buildTableBlocks(
 ): string {
   if (rows.length === 0) return "";
   const headerLine = header.join(" | ");
+
+  // Wide tables can have a header line alone that eats most or all of a
+  // flat maxBatchChars budget (2026-09-16, real case: a 45-column CSV's
+  // header ran ~765 chars against this 900-char default, leaving room
+  // for barely ONE data row per batch -- a 138,000-row file turned into
+  // roughly 138,000 separate one-row chunks, and therefore ~138,000
+  // separate embedding inputs, instead of a sane number of multi-row
+  // batches. That's the actual reason a large, wide CSV's upload ETA
+  // could run into the tens of minutes even with batched, concurrent
+  // embedding calls already in place -- the bottleneck was chunk COUNT,
+  // not how those chunks were embedded.
+  //
+  // Fix: the effective per-batch budget now scales with the header's own
+  // length, guaranteeing at least MIN_ROWS_PER_TABLE_BATCH data rows fit
+  // alongside the header regardless of how many columns the table has,
+  // instead of a single flat constant tuned for narrow tables. Capped at
+  // TABLE_BATCH_HARD_CEILING so a pathologically wide header still can't
+  // balloon a single chunk (and therefore a single embedding input)
+  // without bound -- well inside any embedding model's real input limit
+  // either way.
+  const MIN_ROWS_PER_TABLE_BATCH = 10;
+  const TABLE_BATCH_HARD_CEILING = 8000;
+  const effectiveMaxBatchChars = Math.min(
+    Math.max(maxBatchChars, headerLine.length * (MIN_ROWS_PER_TABLE_BATCH + 1)),
+    TABLE_BATCH_HARD_CEILING
+  );
+
   const blocks: string[] = [];
   let batchLines: string[] = [];
   let batchChars = headerLine.length;
@@ -256,7 +283,7 @@ function buildTableBlocks(
     const line = row.join(" | ");
     if (seenLines.has(line)) continue;
     seenLines.add(line);
-    if (batchLines.length > 0 && batchChars + line.length + 1 > maxBatchChars) {
+    if (batchLines.length > 0 && batchChars + line.length + 1 > effectiveMaxBatchChars) {
       flush();
     }
     batchLines.push(line);

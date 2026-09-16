@@ -313,7 +313,15 @@ function estimateProcessingLabel(filePaths: string[]): string | null {
       continue; // unreadable/missing — skip rather than guess
     }
     const ext = path.extname(filePath).toLowerCase();
-    const avgCharsPerChunk = TABLE_LIKE_EXTENSIONS.has(ext) ? 900 : 1400;
+    // Table-like files' real average chunk size jumped considerably
+    // (2026-09-16, docParsers.ts's buildTableBlocks fix) -- wide tables
+    // now batch several rows per chunk instead of the old flat 900-char
+    // budget, which for a wide-column table left room for barely one row
+    // per chunk. 4000 is a conservative mid-estimate of the new
+    // (header-width-scaled, up to an 8000-char ceiling) effective batch
+    // size without this estimator needing to actually read the file's
+    // header -- it only has the file's size on disk to go on.
+    const avgCharsPerChunk = TABLE_LIKE_EXTENSIONS.has(ext) ? 4000 : 1400;
     const estimatedChunks = Math.max(1, Math.ceil(sizeBytes / avgCharsPerChunk));
     totalEstimatedBatches += Math.ceil(estimatedChunks / EMBED_BATCH_SIZE);
   }
