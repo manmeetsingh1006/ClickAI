@@ -102,7 +102,7 @@ function stopStatusTimer() {
 // this; File objects already carry .size/.name synchronously the moment
 // they're picked or dropped. Same sizing model as the desktop version
 // (see estimateProcessingLabel in main.ts) — table-like files
-// (csv/xlsx/xlsm) become ~900-char table-block chunks, everything else
+// (csv/xlsx/xlsm) become ~4000-char table-block chunks, everything else
 // ~1400-char prose chunks, embedded in batches of 64 at an assumed
 // ~2-4s/batch. Deliberately a wide range, not a promise.
 const TABLE_LIKE_EXTENSIONS = new Set(["csv", "xlsx", "xlsm"]);
@@ -125,7 +125,7 @@ function estimateProcessingLabel(files) {
   let totalEstimatedBatches = 0;
   for (const file of files) {
     const ext = (file.name.split(".").pop() || "").toLowerCase();
-    const avgCharsPerChunk = TABLE_LIKE_EXTENSIONS.has(ext) ? 900 : 1400;
+    const avgCharsPerChunk = TABLE_LIKE_EXTENSIONS.has(ext) ? 4000 : 1400;
     const estimatedChunks = Math.max(1, Math.ceil(file.size / avgCharsPerChunk));
     totalEstimatedBatches += Math.ceil(estimatedChunks / EMBED_BATCH_SIZE);
   }
