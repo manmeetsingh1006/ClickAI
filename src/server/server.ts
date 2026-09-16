@@ -393,9 +393,24 @@ app.post("/api/docs/upload", requireAuth, handleUpload, async (req, res) => {
       // ragStore.addDocument needs the ORIGINAL extension to detect the
       // file type, so copy it once more under its real name before
       // handing it off — the original upload temp file is removed either
-      // way. randomUUID() keeps concurrent same-named files from
-      // colliding on the same temp path.
-      const namedPath = path.join(path.dirname(file.path), `${randomUUID()}-${file.originalname}`);
+      // way. A unique per-file subdirectory (not a prefix ON the
+      // filename itself, 2026-09-16 fix -- see below) keeps concurrent
+      // same-named files from colliding on the same temp path.
+      //
+      // BUG this replaces: prefixing the filename directly with
+      // randomUUID() (`${randomUUID()}-${file.originalname}`) meant
+      // ragStore.addDocument's own `originalName = path.basename(filePath)`
+      // picked up that prefix too -- every web-uploaded document's NAME,
+      // as stored and shown in the UI from then on, was literally
+      // "a1b2c3d4-...-realname.pdf" instead of "realname.pdf". Putting
+      // the uniqueness in the DIRECTORY instead of the filename keeps
+      // the same collision-safety without polluting the name that ends
+      // up in DocSummary.name (and therefore every document list,
+      // citation, and -- as of this fix -- per-upload status row in the
+      // UI that matches against it by filename).
+      const namedDir = path.join(path.dirname(file.path), randomUUID());
+      fs.mkdirSync(namedDir, { recursive: true });
+      const namedPath = path.join(namedDir, file.originalname);
       fs.renameSync(file.path, namedPath);
       try {
         const summary = await ragStore.addDocument(sessionId, namedPath, () => {});
@@ -403,7 +418,7 @@ app.post("/api/docs/upload", requireAuth, handleUpload, async (req, res) => {
       } catch (err: any) {
         errors.push({ fileName: file.originalname, message: err.message || String(err) });
       } finally {
-        fs.unlink(namedPath, () => {});
+        fs.rm(namedDir, { recursive: true, force: true }, () => {});
       }
     })
   );

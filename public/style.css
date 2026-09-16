@@ -93,6 +93,41 @@ html, body{
 .doc-info{ min-width:0; flex:1; }
 .doc-name{ font-size:12px; font-weight:600; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .doc-meta{ font-size:11px; color:var(--text-faint); margin-top:1px; }
+
+/* Per-document upload status rows (2026-09-16) -- shown in docs-list
+   while a batch is still processing, replaced by the normal clickable
+   doc row (with its own visible Chat button) once each file finishes. */
+.doc-item-pending{ cursor:default; }
+.doc-item-pending:hover{ border-color:var(--line); }
+.doc-item-spinner{
+  flex-shrink:0; width:14px; height:14px; margin-top:2px;
+  border-radius:50%;
+  border:2px solid var(--text-faint);
+  border-top-color:var(--accent, #6b8afd);
+  animation: click-ai-spin 0.7s linear infinite;
+}
+.doc-item-error{ border-color:var(--conf-low); background:var(--conf-low-bg); cursor:default; }
+.doc-item-error:hover{ border-color:var(--conf-low); }
+.doc-item-error .doc-meta{ color:var(--conf-low); }
+.doc-badge-error{ background:var(--conf-low-bg); color:var(--conf-low); }
+.doc-pending-dismiss{
+  flex-shrink:0; align-self:flex-start; background:none; border:none;
+  color:var(--text-faint); cursor:pointer; font-size:13px; padding:2px 4px;
+  line-height:1;
+}
+.doc-pending-dismiss:hover{ color:var(--conf-low); }
+
+/* Explicit "Chat" button on a completed document row (2026-09-16,
+   explicit user request -- the row was already clickable to open that
+   document's own chat, but nothing on screen said so). */
+.doc-chat-btn{
+  flex-shrink:0; align-self:center;
+  background:var(--accent-soft); color:var(--accent); border:none;
+  font-family:"Manrope", sans-serif; font-size:11px; font-weight:700;
+  padding:5px 9px; border-radius:6px; cursor:pointer; white-space:nowrap;
+}
+.doc-item:hover .doc-chat-btn, .doc-item.active .doc-chat-btn{ background:var(--accent); color:#fff; }
+
 #docs-status{ padding:0 16px; font-size:11.5px; color:var(--text-faint); min-height:1.2em; }
 
 /* Loading spinner + thinking-dots (2026-09-07, explicit user request). */

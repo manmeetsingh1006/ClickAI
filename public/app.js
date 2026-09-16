@@ -899,6 +899,53 @@ function highlightActiveDocItem() {
   });
 }
 
+// Per-document upload status rows (2026-09-16, explicit user request:
+// "separate document tab where we upload multiple document and on
+// processing and then chat button appear ... click its goes to chat for
+// that document which process successfully") -- previously the ONLY
+// upload feedback was one shared status line at the bottom ("Adding 1
+// file... -- est. ~1-3 min"), with no way to tell which of several
+// uploaded files was done, still going, or failed, and no obvious way to
+// jump into a specific document's chat (the completed rows WERE already
+// clickable, but nothing on screen said so). Now every file in a batch
+// gets its own row the moment the batch starts, showing a spinner while
+// it's still processing; on success the row is simply replaced by the
+// real (now clickable, with a visible "Chat" button) document row once
+// refreshDocsList() picks it up; on failure the row turns into a
+// dismissible error instead of just vanishing.
+let pendingUploadSeq = 0;
+const pendingUploads = new Map(); // id -> { id, fileName, status: "processing" | "error", message }
+
+function beginPendingUploads(fileNames) {
+  for (const fileName of fileNames) {
+    const id = `pending-${++pendingUploadSeq}`;
+    pendingUploads.set(id, { id, fileName, status: "processing", message: "Processing…" });
+  }
+  renderDocsList(docsCache);
+}
+
+// Matches a just-resolved filename back to its pending row. Deliberately
+// only matches rows still "processing" (not already-resolved ones), so
+// two files with the identical name in the same batch each get matched
+// to their OWN row rather than both hitting the first one found.
+function findPendingByName(fileName) {
+  for (const p of pendingUploads.values()) {
+    if (p.fileName === fileName && p.status === "processing") return p;
+  }
+  return null;
+}
+
+function dismissPendingUpload(id) {
+  pendingUploads.delete(id);
+  renderDocsList(docsCache);
+}
+
+function scheduleAutoDismiss(id) {
+  setTimeout(() => {
+    if (pendingUploads.has(id)) dismissPendingUpload(id);
+  }, 15000);
+}
+
 function renderDocsList(docs) {
   docsList.innerHTML = "";
 
@@ -917,23 +964,55 @@ function renderDocsList(docs) {
     docsList.appendChild(allItem);
   }
 
-  if (!docs || docs.length === 0) {
+  for (const p of pendingUploads.values()) {
+    const isError = p.status === "error";
+    const info = docTypeInfo(p.fileName);
+    const item = el("div", `doc-item doc-item-pending${isError ? " doc-item-error" : ""}`);
+    const badge = el("span", `doc-badge ${isError ? "doc-badge-error" : info.cls}`, isError ? "!" : info.label);
+    const meta = el("div", "doc-info");
+    meta.appendChild(el("div", "doc-name", p.fileName));
+    meta.appendChild(el("div", "doc-meta", p.message));
+    item.appendChild(badge);
+    item.appendChild(meta);
+    if (isError) {
+      const dismiss = el("button", "doc-pending-dismiss", "✕");
+      dismiss.title = "Dismiss";
+      dismiss.addEventListener("click", (e) => {
+        e.stopPropagation();
+        dismissPendingUpload(p.id);
+      });
+      item.appendChild(dismiss);
+    } else {
+      item.appendChild(el("span", "doc-item-spinner"));
+    }
+    docsList.appendChild(item);
+  }
+
+  if ((!docs || docs.length === 0) && pendingUploads.size === 0) {
     docsList.appendChild(el("div", "doc-item empty-state", "No documents yet — click \"+ Add\" above, or drag files in."));
     return;
   }
-  for (const doc of docs) {
-    const info = docTypeInfo(doc.name);
-    const item = el("div", "doc-item");
-    item.dataset.threadKey = doc.id;
-    item.title = "View this document's own chat";
-    const badge = el("span", `doc-badge ${info.cls}`, info.label);
-    const meta = el("div", "doc-info");
-    meta.appendChild(el("div", "doc-name", doc.name));
-    meta.appendChild(el("div", "doc-meta", `${doc.chunkCount} chunk${doc.chunkCount === 1 ? "" : "s"}`));
-    item.appendChild(badge);
-    item.appendChild(meta);
-    item.addEventListener("click", () => switchThread(doc.id));
-    docsList.appendChild(item);
+  if (docs) {
+    for (const doc of docs) {
+      const info = docTypeInfo(doc.name);
+      const item = el("div", "doc-item");
+      item.dataset.threadKey = doc.id;
+      item.title = "View this document's own chat";
+      const badge = el("span", `doc-badge ${info.cls}`, info.label);
+      const meta = el("div", "doc-info");
+      meta.appendChild(el("div", "doc-name", doc.name));
+      meta.appendChild(el("div", "doc-meta", `${doc.chunkCount} chunk${doc.chunkCount === 1 ? "" : "s"}`));
+      item.appendChild(badge);
+      item.appendChild(meta);
+      const chatBtn = el("button", "doc-chat-btn", "Chat →");
+      chatBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        switchThread(doc.id);
+      });
+      item.appendChild(chatBtn);
+      item.addEventListener("click", () => switchThread(doc.id));
+      docsList.appendChild(item);
+    }
   }
   highlightActiveDocItem();
 }
@@ -960,11 +1039,35 @@ async function refreshDocsList() {
 // anything while a batch is in flight).
 let activeUploadBatches = 0;
 
-async function handleUploadResult(resultPromise) {
+async function handleUploadResult(resultPromise, batchFileNames) {
   activeUploadBatches++;
   try {
     const result = await resultPromise;
     const stillOthersRunning = activeUploadBatches > 1;
+
+    // Resolve each per-file pending row into either "gone" (success --
+    // the real, now-clickable doc row takes its place once
+    // refreshDocsList() runs below) or a dismissible error.
+    for (const added of result.added || []) {
+      const match = findPendingByName(added.name);
+      if (match) pendingUploads.delete(match.id);
+    }
+    for (const err of result.errors || []) {
+      const match = findPendingByName(err.fileName);
+      if (match) {
+        match.status = "error";
+        match.message = err.message;
+        scheduleAutoDismiss(match.id);
+      }
+    }
+    // Anything in this batch that's neither in added nor errors
+    // (shouldn't normally happen) still gets its pending row cleared
+    // rather than leaving it stuck on "Processing…" forever.
+    for (const name of batchFileNames || []) {
+      const stale = findPendingByName(name);
+      if (stale) pendingUploads.delete(stale.id);
+    }
+
     for (const err of result.errors || []) {
       setDocsStatus(`Couldn't add ${err.fileName}: ${err.message}`, stillOthersRunning);
     }
@@ -975,6 +1078,18 @@ async function handleUploadResult(resultPromise) {
     }
     await refreshDocsList();
   } catch (err) {
+    // The whole batch failed outright (e.g. a network error) -- mark
+    // every one of this batch's pending rows as errored instead of
+    // leaving them stuck on "Processing…" forever.
+    for (const name of batchFileNames || []) {
+      const match = findPendingByName(name);
+      if (match) {
+        match.status = "error";
+        match.message = err.message || String(err);
+        scheduleAutoDismiss(match.id);
+      }
+    }
+    renderDocsList(docsCache);
     setDocsStatus(err.message || String(err), activeUploadBatches > 1);
   } finally {
     activeUploadBatches--;
@@ -1004,7 +1119,9 @@ docsFileInput.addEventListener("change", () => {
   // still processing.
   setDocsStatus(`Adding ${files.length} file${files.length === 1 ? "" : "s"}…`, true);
   setDocsEta(estimateProcessingLabel(files));
-  handleUploadResult(uploadFiles(files));
+  const fileNames = files.map((f) => f.name);
+  beginPendingUploads(fileNames);
+  handleUploadResult(uploadFiles(files), fileNames);
 });
 
 // Drag-and-drop works over the whole panel, so a file can be dropped
@@ -1030,7 +1147,9 @@ docsTab.addEventListener("drop", (e) => {
   if (files.length === 0) return;
   setDocsStatus(`Adding ${files.length} file${files.length === 1 ? "" : "s"}…`, true);
   setDocsEta(estimateProcessingLabel(files));
-  handleUploadResult(uploadFiles(files));
+  const fileNames = files.map((f) => f.name);
+  beginPendingUploads(fileNames);
+  handleUploadResult(uploadFiles(files), fileNames);
 });
 
 docsClearBtn.addEventListener("click", async () => {

@@ -797,6 +797,54 @@ function highlightActiveDocItem() {
   });
 }
 
+// Per-document upload status rows (2026-09-16, explicit user request:
+// "separate document tab where we upload multiple document and on
+// processing and then chat button appear ... click its goes to chat for
+// that document which process successfully") -- previously the ONLY
+// upload feedback was one shared status line at the bottom, with no way
+// to tell which of several uploaded files was done, still going, or
+// failed, and no obvious way to jump into a specific document's chat
+// (the completed rows WERE already clickable, but nothing on screen said
+// so). Now every file in a batch gets its own row the moment the batch
+// starts, showing a spinner (and, here on desktop, the real live
+// "Reading.../Splitting.../Embedding..." progress text pushed over IPC)
+// while it's still processing; on success the row is simply replaced by
+// the real (now clickable, with a visible "Chat" button) document row
+// once refreshDocsList() picks it up; on failure the row turns into a
+// dismissible error instead of just vanishing.
+let pendingUploadSeq = 0;
+const pendingUploads = new Map(); // id -> { id, fileName, status: "processing" | "error", message }
+
+function beginPendingUploads(fileNames) {
+  for (const fileName of fileNames) {
+    const id = `pending-${++pendingUploadSeq}`;
+    pendingUploads.set(id, { id, fileName, status: "processing", message: "Processing…" });
+  }
+  renderDocsList(docsCache);
+}
+
+// Matches a just-resolved (or a live progress message's) filename back
+// to its pending row. Deliberately only matches rows still "processing"
+// (not already-resolved ones), so two files with the identical name in
+// the same batch each get matched to their OWN row.
+function findPendingByName(fileName) {
+  for (const p of pendingUploads.values()) {
+    if (p.fileName === fileName && p.status === "processing") return p;
+  }
+  return null;
+}
+
+function dismissPendingUpload(id) {
+  pendingUploads.delete(id);
+  renderDocsList(docsCache);
+}
+
+function scheduleAutoDismiss(id) {
+  setTimeout(() => {
+    if (pendingUploads.has(id)) dismissPendingUpload(id);
+  }, 15000);
+}
+
 function renderDocsList(docs) {
   docsList.innerHTML = "";
 
@@ -815,23 +863,55 @@ function renderDocsList(docs) {
     docsList.appendChild(allItem);
   }
 
-  if (!docs || docs.length === 0) {
+  for (const p of pendingUploads.values()) {
+    const isError = p.status === "error";
+    const info = docTypeInfo(p.fileName);
+    const item = el("div", `doc-item doc-item-pending${isError ? " doc-item-error" : ""}`);
+    const badge = el("span", `doc-badge ${isError ? "doc-badge-error" : info.cls}`, isError ? "!" : info.label);
+    const meta = el("div", "doc-info");
+    meta.appendChild(el("div", "doc-name", p.fileName));
+    meta.appendChild(el("div", "doc-meta", p.message));
+    item.appendChild(badge);
+    item.appendChild(meta);
+    if (isError) {
+      const dismiss = el("button", "doc-pending-dismiss", "✕");
+      dismiss.title = "Dismiss";
+      dismiss.addEventListener("click", (e) => {
+        e.stopPropagation();
+        dismissPendingUpload(p.id);
+      });
+      item.appendChild(dismiss);
+    } else {
+      item.appendChild(el("span", "doc-item-spinner"));
+    }
+    docsList.appendChild(item);
+  }
+
+  if ((!docs || docs.length === 0) && pendingUploads.size === 0) {
     docsList.appendChild(el("div", "doc-item empty-state", "No documents yet — click \"+ Add\" above, or drag files in."));
     return;
   }
-  for (const doc of docs) {
-    const info = docTypeInfo(doc.name);
-    const item = el("div", "doc-item");
-    item.dataset.threadKey = doc.id;
-    item.title = "View this document's own chat";
-    const badge = el("span", `doc-badge ${info.cls}`, info.label);
-    const meta = el("div", "doc-info");
-    meta.appendChild(el("div", "doc-name", doc.name));
-    meta.appendChild(el("div", "doc-meta", `${doc.chunkCount} chunk${doc.chunkCount === 1 ? "" : "s"}`));
-    item.appendChild(badge);
-    item.appendChild(meta);
-    item.addEventListener("click", () => switchThread(doc.id));
-    docsList.appendChild(item);
+  if (docs) {
+    for (const doc of docs) {
+      const info = docTypeInfo(doc.name);
+      const item = el("div", "doc-item");
+      item.dataset.threadKey = doc.id;
+      item.title = "View this document's own chat";
+      const badge = el("span", `doc-badge ${info.cls}`, info.label);
+      const meta = el("div", "doc-info");
+      meta.appendChild(el("div", "doc-name", doc.name));
+      meta.appendChild(el("div", "doc-meta", `${doc.chunkCount} chunk${doc.chunkCount === 1 ? "" : "s"}`));
+      item.appendChild(badge);
+      item.appendChild(meta);
+      const chatBtn = el("button", "doc-chat-btn", "Chat →");
+      chatBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        switchThread(doc.id);
+      });
+      item.appendChild(chatBtn);
+      item.addEventListener("click", () => switchThread(doc.id));
+      docsList.appendChild(item);
+    }
   }
   highlightActiveDocItem();
 }
@@ -859,11 +939,29 @@ function withTimeout(promise, ms, timeoutMessage) {
 // starting.
 let activeUploadBatches = 0;
 
-async function handleUploadResult(resultPromise) {
+async function handleUploadResult(resultPromise, batchFileNames) {
   activeUploadBatches++;
   try {
     const result = await resultPromise;
     const stillOthersRunning = activeUploadBatches > 1;
+
+    for (const added of result.added || []) {
+      const match = findPendingByName(added.name);
+      if (match) pendingUploads.delete(match.id);
+    }
+    for (const err of result.errors || []) {
+      const match = findPendingByName(err.fileName);
+      if (match) {
+        match.status = "error";
+        match.message = err.message;
+        scheduleAutoDismiss(match.id);
+      }
+    }
+    for (const name of batchFileNames || []) {
+      const stale = findPendingByName(name);
+      if (stale) pendingUploads.delete(stale.id);
+    }
+
     for (const err of result.errors || []) {
       setDocsStatus(`Couldn't add ${err.fileName}: ${err.message}`, stillOthersRunning);
     }
@@ -874,6 +972,15 @@ async function handleUploadResult(resultPromise) {
     }
     await refreshDocsList();
   } catch (err) {
+    for (const name of batchFileNames || []) {
+      const match = findPendingByName(name);
+      if (match) {
+        match.status = "error";
+        match.message = err.message || String(err);
+        scheduleAutoDismiss(match.id);
+      }
+    }
+    renderDocsList(docsCache);
     setDocsStatus(err.message || String(err), activeUploadBatches > 1);
   } finally {
     activeUploadBatches--;
@@ -909,7 +1016,9 @@ docsUploadBtn.addEventListener("click", async () => {
   // ETA display (desktop) comes from main.ts pushing "docs-status-eta"
   // itself once addDocumentPaths() there starts -- nothing to compute
   // client-side here.
-  handleUploadResult(window.clickai.addDocumentPaths(filePaths));
+  const fileNames = filePaths.map((p) => p.split("/").pop() || p);
+  beginPendingUploads(fileNames);
+  handleUploadResult(window.clickai.addDocumentPaths(filePaths), fileNames);
 });
 
 // Drag-and-drop works over the whole panel regardless of where the docs
@@ -939,7 +1048,9 @@ docsTab.addEventListener("drop", (e) => {
   // drop, without blocking anything (2026-09-16, same fix as the "+ Add"
   // button).
   setDocsStatus(`Adding ${filePaths.length} file${filePaths.length === 1 ? "" : "s"}…`, true);
-  handleUploadResult(window.clickai.addDocumentPaths(filePaths));
+  const fileNames = filePaths.map((p) => p.split("/").pop() || p);
+  beginPendingUploads(fileNames);
+  handleUploadResult(window.clickai.addDocumentPaths(filePaths), fileNames);
 });
 
 docsClearBtn.addEventListener("click", async () => {
@@ -958,7 +1069,21 @@ docsClearBtn.addEventListener("click", async () => {
   await refreshDocsList();
 });
 
-window.clickai.onDocsStatus((message) => { setDocsStatus(message, !!message); });
+window.clickai.onDocsStatus((message) => {
+  setDocsStatus(message, !!message);
+  // Live per-step progress ("Reading X…", "Splitting X…", "Embedding N
+  // chunks from X…") always names the file it's about (see ragStore.ts's
+  // onProgress calls) -- attribute it to that file's own pending row too
+  // (2026-09-16), not just the one shared status line at the bottom.
+  if (!message) return;
+  for (const p of pendingUploads.values()) {
+    if (p.status === "processing" && message.includes(p.fileName)) {
+      p.message = message;
+      renderDocsList(docsCache);
+      break;
+    }
+  }
+});
 
 refreshDocsList();
 renderDocsLogHint();
